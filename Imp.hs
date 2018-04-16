@@ -6,6 +6,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 import Prelude hiding (lookup)
 import Control.Monad.Reader
 import Control.Monad.State.Strict
@@ -29,6 +30,7 @@ import QuickSpec.Haskell(arbitraryFunction)
 import Test.QuickCheck.Gen
 import Test.QuickCheck.Random
 import QuickSpec.Explore.Conditionals
+import QuickSpec.Prop
 
 data Prog =
     If Exp Prog Prog
@@ -42,11 +44,12 @@ deriving instance Show Prog
 infixr 4 `Then`
 infix 5 :=
 
-data Val = Int Int | Bool Bool | Array [Int] | LePair Int Int | ElemPair Int [Int]
+data Val = Int Int | Value Value | Bool Bool | Array [Value] | LePair Value Value | ElemPair Value [Value]
   deriving (Eq, Ord, Show)
 
 instance Typed Val where
   typ Int{} = intTy
+  typ Value{} = valueTy
   typ Bool{} = boolTy
   typ Array{} = arrayTy
   typ LePair{} = leTy
@@ -55,6 +58,7 @@ instance Typed Val where
 
 instance Pretty Val where
   pPrint (Int x) = pPrint x
+  pPrint (Value x) = pPrint x
   pPrint (Bool x) = pPrint x
   pPrint (Array xs) = pPrint xs
 
@@ -76,7 +80,7 @@ instance Typed ProgVar where
 
 data Fun =
   Val Val | ProgVar ProgVar |
-  Not | And | Eq Type | Le |
+  Not | And | Eq Type | Le Type |
   Plus | Div |
   Index | Slice | Len | Elem |
   Le1 | Le2 | Elem1 | Elem2
@@ -93,7 +97,7 @@ instance Pretty Fun where
   pPrint Not = text "~"
   pPrint And = text "&"
   pPrint (Eq _) = text "=="
-  pPrint Le = text "<="
+  pPrint (Le _) = text "<="
   pPrint Plus = text "+"
   pPrint Div = text "/"
   pPrint Index = text "!"
@@ -111,7 +115,7 @@ instance PrettyTerm Fun where
   termStyle Not = prefix
   termStyle And = infixStyle 5
   termStyle (Eq _) = infixStyle 5
-  termStyle Le = infixStyle 5
+  termStyle (Le _) = infixStyle 5
   termStyle Plus = infixStyle 5
   termStyle Div = infixStyle 5
   termStyle Index = infixStyle 5
@@ -124,16 +128,16 @@ instance Typed Fun where
   typ Not = arrowType [boolTy] boolTy
   typ And = arrowType [boolTy, boolTy] boolTy
   typ (Eq ty) = arrowType [ty, ty] boolTy
-  typ Le = arrowType [intTy, intTy] boolTy
+  typ (Le ty) = arrowType [ty, ty] boolTy
   typ Plus = arrowType [intTy, intTy] intTy
   typ Div = arrowType [intTy, intTy] intTy
-  typ Index = arrowType [arrayTy, intTy] intTy
+  typ Index = arrowType [arrayTy, intTy] valueTy
   typ Slice = arrowType [arrayTy, intTy, intTy] arrayTy
   typ Len = arrowType [arrayTy] intTy
-  typ Elem = arrowType [intTy, arrayTy] boolTy
-  typ Le1 = arrowType [leTy] intTy
-  typ Le2 = arrowType [leTy] intTy
-  typ Elem1 = arrowType [elemTy] intTy
+  typ Elem = arrowType [valueTy, arrayTy] boolTy
+  typ Le1 = arrowType [leTy] valueTy
+  typ Le2 = arrowType [leTy] valueTy
+  typ Elem1 = arrowType [elemTy] valueTy
   typ Elem2 = arrowType [elemTy] arrayTy
   typeSubst_ _ x = x
 
@@ -143,7 +147,7 @@ int x = App (Val (Int x)) []
 bool :: Bool -> Exp
 bool x = App (Val (Bool x)) []
 
-array :: [Int] -> Exp
+array :: [Value] -> Exp
 array xs = App (Val (Array xs)) []
 
 progVar :: ProgVar -> Exp
@@ -159,7 +163,7 @@ eq :: Exp -> Exp -> Exp
 eq e1 e2 = App (Eq (typ e1)) [e1, e2]
 
 le :: Exp -> Exp -> Exp
-le e1 e2 = App Le [e1, e2]
+le e1 e2 = App (Le (typ e1)) [e1, e2]
 
 plus :: Exp -> Exp -> Exp
 plus e1 e2 = App Plus [e1, e2]
@@ -224,9 +228,9 @@ eval env (App And [e1, e2]) =
   in Bool (x && y)
 eval env (App (Eq _) [e1, e2]) =
   Bool (eval env e1 == eval env e2)
-eval env (App Le [e1, e2]) =
-  let Int x = eval env e1
-      Int y = eval env e2
+eval env (App (Le _) [e1, e2]) =
+  let x = eval env e1
+      y = eval env e2
   in Bool (x <= y)
 eval env (App Plus [e1, e2]) =
   let Int x = eval env e1
@@ -239,25 +243,25 @@ eval env (App Div [e1, e2]) =
 eval env (App Index [e1, e2]) =
   let Array xs = eval env e1
       Int i = eval env e2
-  in if i >= 0 && i < length xs then Int (xs !! i) else Int (-1)
+  in if i >= 0 && i < length xs then Value (xs !! i) else Value (-1)
 eval env (App Slice [e1, e2, e3]) =
   let Array xs = eval env e1
       Int i = eval env e2
       Int j = eval env e3
   in Array (drop i (take j xs))
 eval env (App Elem [e1, e2]) =
-  let Int x = eval env e1
+  let Value x = eval env e1
       Array xs = eval env e2
   in Bool (x `elem` xs)
 eval env (App Le1 [e]) =
   let LePair x _ = eval env e
-  in Int x
+  in Value x
 eval env (App Le2 [e]) =
   let LePair _ y = eval env e
-  in Int y
+  in Value y
 eval env (App Elem1 [e]) =
   let ElemPair x _ = eval env e
-  in Int x
+  in Value x
 eval env (App Elem2 [e]) =
   let ElemPair _ y = eval env e
   in Array y
@@ -267,37 +271,41 @@ bsearch =
   lo := int 0 `Then`
   hi := len (progVar arr) `Then`
   found := bool False `Then`
-  While (andd (nott (progVar found)) (nott (eq (progVar lo) (progVar hi))))
-    (Point `Then`
-     mid := divide (plus (progVar lo) (progVar hi)) (int 2) `Then`
+  idx := int 0 `Then`
+  While (andd (nott (progVar found)) (nott (le (progVar hi) (progVar lo))))
+    (mid := divide (plus (progVar lo) (progVar hi)) (int 2) `Then`
      If (eq (progVar x) (index (progVar arr) (progVar mid)))
        (found := bool True `Then` idx := progVar mid)
        (If (le (progVar x) (index (progVar arr) (progVar mid)))
-         (hi := progVar mid)
-         (lo := plus (progVar mid) (int 1))))
+         (hi := plus (progVar mid) (int (-1)))
+         (lo := plus (progVar mid) (int 1)))) `Then`
+  Point
 
 x, lo, hi, mid, idx, arr, found :: ProgVar
 lo = V intTy "lo"
 hi = V intTy "hi"
 mid = V intTy "mid"
 idx = V intTy "idx"
-x = V intTy "x"
+x = V valueTy "x"
 arr = V arrayTy "arr"
 found = V boolTy "found"
 
-intTy, boolTy, arrayTy, leTy, elemTy :: Type
+intTy, valueTy, boolTy, arrayTy, leTy, elemTy :: Type
 intTy = typeOf (undefined :: Int)
+valueTy = typeOf (undefined :: Value)
 boolTy = typeOf (undefined :: Bool)
 arrayTy = typeOf (undefined :: [Int])
 leTy = typeOf (undefined :: LeTy)
 elemTy = typeOf (undefined :: ElemTy)
 
+newtype Value = MkValue Int deriving (Eq, Ord, Show, Arbitrary, Num, Pretty)
+
 data LeTy
 data ElemTy
 
-bsearchEnv :: Int -> [Int] -> Int -> Int -> Bool -> Env
-bsearchEnv vx varr vlo vhi vfound =
-  Map.fromList [(x, Int vx), (arr, Array varr), (lo, Int vlo), (hi, Int vhi), (found, Bool vfound)]
+bsearchEnv :: Value -> [Value] -> Int -> Int -> Bool -> Int -> Env
+bsearchEnv vx varr vlo vhi vfound vidx =
+  Map.fromList [(x, Value vx), (arr, Array varr), (lo, Int vlo), (hi, Int vhi), (found, Bool vfound), (idx, Int vidx)]
 
 newtype SortedList a = SortedList [a] deriving (Eq, Ord, Show)
 
@@ -311,13 +319,39 @@ genEnv = do
   lo <- arbitrary
   hi <- arbitrary
   found <- arbitrary
-  return (bsearchEnv x xs lo hi found)
+  idx <- arbitrary
+  return (bsearchEnv x xs lo hi found idx)
+
+genTestCase :: Gen Env
+genTestCase = do
+  (x, xs) <- elements tests
+  lo <- arbitrary
+  hi <- arbitrary
+  found <- arbitrary
+  idx <- arbitrary
+  return (bsearchEnv x xs lo hi found idx)
+
+tests :: [(Value, [Value])]
+tests = [
+  (x1, [x1]),
+  (x3, [x1,x2,x3,x4,x5]),
+  (x6, [x1,x2,x3,x4]),
+  (x4, [x1,x2,x3,x5]),
+  (x5, [x1,x2,x3,x5])]
+  where
+    x1 = -123
+    x2 = -6
+    x3 = -2
+    x4 = 59
+    x5 = 102
+    x6 = 109
 
 genVars :: Gen (Var -> Val)
 genVars =
   arbitraryFunction $ \(QS.V ty _) ->
     case () of
     _ | ty == intTy -> Int <$> arbitrary
+      | ty == valueTy -> Value <$> arbitrary
       | ty == boolTy -> Bool <$> arbitrary
       | ty == arrayTy -> Array <$> arbitrary
       | ty == leTy -> do
@@ -329,18 +363,18 @@ genVars =
           x <- elements xs
           return (ElemPair x xs)
 
-genPoint :: Gen Env
-genPoint =
-  ((collect undefined bsearch <$> genEnv) `suchThat` (not . null)) >>= elements
+genPoint :: Gen Env -> Gen Env
+genPoint gen =
+  ((collect undefined bsearch <$> gen) `suchThat` (not . null)) >>= elements
 
-prop_bsearch :: Int -> SortedList Int -> Bool
+prop_bsearch :: Value -> SortedList Value -> Bool
 prop_bsearch x (SortedList xs) =
   found_ == (x `elem` xs) &&
-  (not found_ || xs !! mid_ == x)
+  (not found_ || xs !! idx_ == x)
   where
-    res = run undefined bsearch (bsearchEnv x xs undefined undefined undefined)
+    res = run undefined bsearch (bsearchEnv x xs undefined undefined undefined undefined)
     Bool found_ = Map.findWithDefault undefined found res
-    Int mid_ = Map.findWithDefault undefined mid res
+    Int idx_ = Map.findWithDefault undefined idx res
 
 instance Sized Fun where
   size _ = 1
@@ -351,22 +385,28 @@ instance Apply (Term Fun) where
     return (App f (us ++ [u]))
   tryApply _ _ = Nothing
 
+instance PrettyArity Fun
+
 instance Predicate Fun where
-  classify Le = Predicate [Le1, Le2] leTy (bool True)
+--  classify (Le = Predicate [Le1, Le2] leTy (bool True)
   classify Elem = Predicate [Elem1, Elem2] elemTy (bool True)
-  classify Le1 = Selector 0 Le leTy
-  classify Le2 = Selector 1 Le leTy
+--  classify Le1 = Selector 0 Le leTy
+--  classify Le2 = Selector 1 Le leTy
   classify Elem1 = Selector 0 Elem elemTy
   classify Elem2 = Selector 1 Elem elemTy
   classify _ = Function
 
 main = do
+  quickCheck prop_bsearch
+  quickCheck (forAll (elements tests) $ \(x, xs) -> prop_bsearch x (SortedList xs))
   let
     n = 7
-    present prop = putLine (prettyShow (conditionalise prop))
-    univ = conditionalsUniverse [intTy, boolTy, arrayTy] [Elem, Le]
+    present prop =
+      when (not (null (intersect [ProgVar found, ProgVar idx] (funs prop)))) $
+        putLine (prettyShow (prettyProp (const ["x","y","z"]) (conditionalise prop)))
+    univ = conditionalsUniverse [intTy, valueTy, boolTy, arrayTy] [Elem]
     eval' env t
-      | typ t `elem` [intTy, boolTy, arrayTy, leTy, elemTy] = Left (eval env t)
+      | typ t `elem` [intTy, valueTy, boolTy, arrayTy, leTy, elemTy] = Left (eval env t)
       | otherwise = Right t
     enum =
       sortTerms measure $
@@ -375,10 +415,10 @@ main = do
         atomic =
           [Var (QS.V typeVar 0),
            progVar x,
-           progVar lo,
-           progVar hi,
+           -- progVar lo,
+           -- progVar hi,
            -- progVar mid,
-           -- progVar idx,
+           progVar idx,
            progVar arr,
            progVar found,
            App (Val (Bool True)) [],
@@ -392,20 +432,20 @@ main = do
            App Elem [],
            App Elem1 [],
            App Elem2 [],
-           App Le [],
+           App (Le intTy) [],
+           App (Le valueTy) [],
            App Le1 [],
            App Le2 [],
            App Plus [],
            -- App Div [],
            App Index [],
-           App Slice [],
-           App Len []]
+           App Slice []]
 
     qs :: Gen Env -> Twee.Pruner (WithConstructor Fun) Terminal ()
     qs arb =
       (\g -> unGen g (mkQCGen 1234) 0) $
-      QuickCheck.run (QuickCheck.Config 1000 10 Nothing) (liftM2 (,) arb genVars) eval' $
-      runConditionals [Elem, Le] $
+      QuickCheck.run (QuickCheck.Config 1000 100 Nothing) (liftM2 (,) arb genVars) eval' $
+      runConditionals [Elem, Le intTy, Le valueTy] $
       quickSpec present (flip eval') n univ enum
 
   withStdioTerminal $ Twee.run (Twee.Config n maxBound) $ do
@@ -413,4 +453,13 @@ main = do
     qs genEnv
     putLine ""
     putLine "== foreground =="
-    qs genPoint
+    qs (genPoint genEnv)
+    putLine ""
+    putLine "== psychic =="
+    qs (genPoint genTestCase)
+    -- putLine ""
+    -- putLine "== when found is true =="
+    -- qs (genPoint genEnv `suchThat` (\env -> Map.lookup found env == Just (Bool True)))
+    -- putLine ""
+    -- putLine "== psychic when found is true =="
+    -- qs (genPoint genTestCase `suchThat` (\env -> Map.lookup found env == Just (Bool True)))
