@@ -402,19 +402,21 @@ main = do
   let
     n = 7
     present prop =
-      when (not (null (intersect [ProgVar found, ProgVar idx] (funs prop)))) $
+      when (ok prop && not (null (intersect [ProgVar found, ProgVar idx] (funs prop)))) $
         putLine (prettyShow (prettyProp (const ["x","y","z"]) (conditionalise prop)))
+    ok (_ :=>: t :=: u) | typ t == boolTy, size u > 1 = False
+    ok _ = True
     univ = conditionalsUniverse [intTy, valueTy, boolTy, arrayTy] [Elem]
     eval' env t
       | typ t `elem` [intTy, valueTy, boolTy, arrayTy, leTy, elemTy] = Left (eval env t)
       | otherwise = Right t
-    enum =
+    enum var =
       sortTerms measure $
       enumerateConstants atomic `mappend` enumerateApplications
       where
         atomic =
-          [Var (QS.V typeVar 0),
-           progVar x,
+          [Var (QS.V typeVar 0) | var] ++
+          [progVar x,
            -- progVar lo,
            -- progVar hi,
            -- progVar mid,
@@ -438,25 +440,30 @@ main = do
            App Le2 [],
            App Plus [],
            -- App Div [],
+           App Len [],
            App Index [],
            App Slice []]
 
-    qs :: Gen Env -> Twee.Pruner (WithConstructor Fun) Terminal ()
-    qs arb =
+    qs :: Bool -> Gen Env -> Twee.Pruner (WithConstructor Fun) Terminal ()
+    qs var arb =
       (\g -> unGen g (mkQCGen 1234) 0) $
       QuickCheck.run (QuickCheck.Config 1000 100 Nothing) (liftM2 (,) arb genVars) eval' $
       runConditionals [Elem, Le intTy, Le valueTy] $
-      quickSpec present (flip eval') n univ enum
+      quickSpec present (flip eval') n univ (enum var)
 
   withStdioTerminal $ Twee.run (Twee.Config n maxBound) $ do
     putLine "== background =="
-    qs genEnv
+    let
+      post env =
+        Map.lookup found env == Just (Bool True) ||
+        Map.lookup lo env >= Map.lookup hi env 
+    qs True (genEnv `suchThat` post)
     putLine ""
     putLine "== foreground =="
-    qs (genPoint genEnv)
+    qs False (genPoint genEnv)
     putLine ""
     putLine "== psychic =="
-    qs (genPoint genTestCase)
+    qs False (genPoint genTestCase)
     -- putLine ""
     -- putLine "== when found is true =="
     -- qs (genPoint genEnv `suchThat` (\env -> Map.lookup found env == Just (Bool True)))
