@@ -33,12 +33,12 @@ import QuickSpec.Explore.Conditionals
 import QuickSpec.Prop
 
 data Prog =
-    If Exp Prog Prog
+    Skip
+  | ProgVar := Exp
+  | If Exp Prog Prog
   | While Exp Prog
   | Prog `Then` Prog
-  | Skip
-  | Point
-  | ProgVar := Exp
+  | HelpPlease
 deriving instance Show Prog
 
 infixr 4 `Then`
@@ -46,6 +46,13 @@ infix 5 :=
 
 data Val = Int Int | Value Value | Bool Bool | Array [Value] | LePair Value Value | ElemPair Value [Value]
   deriving (Eq, Ord, Show)
+
+instance Arbitrary Val where
+  shrink (Int x) = Int <$> shrink x
+  shrink (Value x) = Value <$> shrink x
+  shrink (Bool x) = Bool <$> shrink x
+  shrink (Array xs) = Array <$> sort <$> shrink xs
+  shrink _ = []
 
 instance Typed Val where
   typ Int{} = intTy
@@ -200,7 +207,7 @@ exec point (p1 `Then` p2) = do
   exec point p1
   exec point p2
 exec _ Skip = return ()
-exec point Point = point
+exec point HelpPlease = point
 exec _ (x := e) = do
   y <- evalM e
   modify (Map.insert x y)
@@ -210,6 +217,12 @@ evalM exp = do
   env <- get
   var <- ask
   return (eval (env, var) exp)
+
+evalLHS :: (Env, Var -> Val) -> Equation (Term Fun) -> Bool
+evalLHS env (t :=: u) = eval env t == eval env u
+
+evalRHS :: (Env, Var -> Val) -> Equation (Term Fun) -> Property
+evalRHS env (t :=: u) = eval env t Test.QuickCheck.=== eval env u
 
 eval :: (Env, Var -> Val) -> Term Fun -> Val
 eval _ (App (Val x) []) = x
@@ -279,7 +292,7 @@ bsearch =
        (If (le (progVar x) (index (progVar arr) (progVar mid)))
          (hi := plus (progVar mid) (int (-1)))
          (lo := plus (progVar mid) (int 1)))) `Then`
-  Point
+  HelpPlease
 
 x, lo, hi, mid, idx, arr, found :: ProgVar
 lo = V intTy "lo"
@@ -396,14 +409,26 @@ instance Predicate Fun where
   classify Elem2 = Selector 1 Elem elemTy
   classify _ = Function
 
+instance Testable (Prop (Term Fun)) where
+  property (lhs :=>: rhs) =
+    forAllShrink genEnv (map Map.fromList . shrinkElements . Map.toList) $ \env0 ->
+      let env = run undefined bsearch env0 in
+      counterexample ("arr = " ++ show (Map.findWithDefault undefined arr env)) $
+      counterexample ("x = " ++ show (Map.findWithDefault undefined x env)) $
+      foldr (==>) (evalRHS (env, undefined) rhs) (map (evalLHS (env, undefined)) lhs)
+    where
+      shrinkElements [] = []
+      shrinkElements ((k,x):xs) = [(k,y):xs | y<- shrink x] ++ [(k,x):ys | ys <- shrinkElements xs]
+
 main = do
   quickCheck prop_bsearch
   quickCheck (forAll (elements tests) $ \(x, xs) -> prop_bsearch x (SortedList xs))
   let
     n = 7
-    present prop =
-      when (ok prop && not (null (intersect [ProgVar found, ProgVar idx] (funs prop)))) $
+    present qc prop =
+      when (ok prop && not (null (intersect [ProgVar found, ProgVar idx] (funs prop)))) $ do
         putLine (prettyShow (prettyProp (const ["x","y","z"]) (conditionalise prop)))
+        when qc (liftIO (quickCheck prop))
     ok (_ :=>: t :=: u) | typ t == boolTy, size u > 1 = False
     ok _ = True
     univ = conditionalsUniverse [intTy, valueTy, boolTy, arrayTy] [Elem]
@@ -444,12 +469,12 @@ main = do
            App Index [],
            App Slice []]
 
-    qs :: Bool -> Gen Env -> Twee.Pruner (WithConstructor Fun) Terminal ()
-    qs var arb =
+    qs :: Bool -> Bool -> Gen Env -> Twee.Pruner (WithConstructor Fun) Terminal ()
+    qs qc var arb =
       (\g -> unGen g (mkQCGen 1234) 0) $
       QuickCheck.run (QuickCheck.Config 1000 100 Nothing) (liftM2 (,) arb genVars) eval' $
       runConditionals [Elem, Le intTy, Le valueTy] $
-      quickSpec present (flip eval') n univ (enum var)
+      quickSpec (present qc) (flip eval') n univ (enum var)
 
   withStdioTerminal $ Twee.run (Twee.Config n maxBound) $ do
     putLine "== background =="
@@ -457,13 +482,13 @@ main = do
       post env =
         Map.lookup found env == Just (Bool True) ||
         Map.lookup lo env >= Map.lookup hi env 
-    qs True (genEnv `suchThat` post)
+    qs False True (genEnv `suchThat` post)
     putLine ""
     putLine "== foreground =="
-    qs False (genPoint genEnv)
+    qs False False (genPoint genEnv)
     putLine ""
     putLine "== psychic =="
-    qs False (genPoint genTestCase)
+    qs True False (genPoint genTestCase)
     -- putLine ""
     -- putLine "== when found is true =="
     -- qs (genPoint genEnv `suchThat` (\env -> Map.lookup found env == Just (Bool True)))
