@@ -7,15 +7,12 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
--- import Prelude hiding (lookup)
--- import Control.Monad.Reader
--- import Control.Monad.State.Strict
--- import Control.Monad.Writer.Strict
 import qualified Data.Map.Strict as Map
 import Data.Map(Map)
 import qualified Data.Set as Set
 import Data.Set(Set)
 import Twee.Pretty
+import Control.Monad
 -- import Data.List hiding (lookup)
 -- import Data.Maybe
 -- import Data.Typeable(cast)
@@ -34,22 +31,31 @@ import Twee.Pretty
 -- import Test.QuickCheck.Random
 -- import QuickSpec.Explore.Conditionals
 -- import QuickSpec.Prop
-import Data.Typeable
 import Data.Maybe
+import Data.List
+import Test.QuickCheck hiding (Ordered)
 
 data Prog where
-  (:=) :: Var a -> Expr a -> Prog
-  Skip :: Prog
-  Then :: Prog -> Prog -> Prog
-  If :: Expr Bool -> Prog -> Prog -> Prog
-  While :: Expr Bool -> Prog -> Prog
-  Assert :: Expr Bool -> Prog
-  Point :: Prog
-deriving instance Show Prog
+  Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
+  Body :: Stmt -> Prog
+
+body :: Prog -> Stmt
+body (Arg _ _ prog) = body prog
+body (Body stmt) = stmt
+
+data Stmt where
+  (:=) :: Type a => Var a -> Expr a -> Stmt
+  Skip :: Stmt
+  Then :: Stmt -> Stmt -> Stmt
+  If :: Expr Bool -> Stmt -> Stmt -> Stmt
+  While :: Expr Bool -> Stmt -> Stmt
+  Assert :: Expr Bool -> Stmt
+  Point :: Stmt
+deriving instance Show Stmt
 
 data Expr a where
-  Value :: Typeable a => Value -> Expr a
-  Local :: Typeable a => Var a -> Expr a
+  Value :: Type a => Value -> Expr a
+  Local :: Type a => Var a -> Expr a
   -- Boolean expressions
   Not :: Expr Bool -> Expr Bool
   And :: Expr Bool -> Expr Bool -> Expr Bool
@@ -70,6 +76,7 @@ data Expr a where
   Image :: Ord a => Expr (Array a) -> Expr (Set a)
   Concat :: Expr Index -> Expr (Array a) -> Expr (Array a) -> Expr (Array a)
   Restrict :: Expr (Array a) -> Expr (Set Index) -> Expr (Array a)
+  Sorted :: Ord a => Expr (Array a) -> Expr Bool
   -- Sets
   Interval :: Expr Index -> Expr Index -> Expr (Set Index)
   Singleton :: Ord a => Expr a -> Expr (Set a)
@@ -92,19 +99,100 @@ data Array a =
     arrayUpper :: Index,
     arrayContents :: Map Index a }
   deriving (Eq, Ord, Show)
-newtype Index = Index Int deriving (Eq, Ord, Show, Num, Enum, Integral, Real, Pretty)
+
+instance Arbitrary a => Arbitrary (Array a) where
+  arbitrary = do
+    (m, n) <- arbitrary
+    let
+      lower = min m n
+      upper = max m n
+    contents <- Map.fromList <$> zip [lower..upper-1] <$> infiniteList
+    return (Array lower upper contents)
+  shrink arr =
+    [shift (l-arrayLower arr) arr | l <- shrink (arrayLower arr)] ++
+    [cut n arr | n <- shrink (arrayUpper arr-arrayLower arr), n >= 0]
+    where
+      shift k arr =
+        Array (arrayLower arr+k) (arrayUpper arr+k)
+          (Map.mapKeys (+k) (arrayContents arr))
+      cut n arr =
+        let
+          l = arrayLower arr
+          u = arrayLower arr + n
+        in
+          Array l u
+            (Map.filterWithKey (\k _ -> k >= l && k < u) (arrayContents arr))
+
+newtype Index = Index Int deriving (Eq, Ord, Show, Num, Enum, Integral, Real, Pretty, Arbitrary)
 
 data Var a = Var String deriving (Eq, Ord, Show)
 
 type Env = Map String Value
 
-fromValue :: Typeable a => Value -> Maybe a
-fromValue (IndexVal x) = cast x
-fromValue (BoolVal x) = cast x
-fromValue (IntegerVal x) = cast x
-fromValue (SetIntegerVal x) = cast x
-fromValue (SetIndexVal x) = cast x
-fromValue (ArrayVal x) = cast x
+class Arbitrary a => Type a where
+  toValue :: a -> Value
+  fromValue :: Value -> Maybe a
+  typeName :: a -> String
+
+instance Type Index where
+  toValue = IndexVal
+  fromValue (IndexVal x) = Just x
+  fromValue _ = Nothing
+  typeName _ = "index"
+
+instance Type Bool where
+  toValue = BoolVal
+  fromValue (BoolVal x) = Just x
+  fromValue _ = Nothing
+  typeName _ = "boolean"
+
+instance Type Integer where
+  toValue = IntegerVal
+  fromValue (IntegerVal x) = Just x
+  fromValue _ = Nothing
+  typeName _ = "integer"
+
+instance Type (Set Integer) where
+  toValue = SetIntegerVal
+  fromValue (SetIntegerVal x) = Just x
+  fromValue _ = Nothing
+  typeName _ = "set of integer"
+
+instance Type (Set Index) where
+  toValue = SetIndexVal
+  fromValue (SetIndexVal x) = Just x
+  fromValue _ = Nothing
+  typeName _ = "set of index"
+
+instance Type (Array Integer) where
+  toValue = ArrayVal
+  fromValue (ArrayVal x) = Just x
+  fromValue _ = Nothing
+  typeName _ = "array of integer"
+
+exec :: Env -> Stmt -> ([Env], Env)
+exec env (Var x := e) =
+  ([], Map.insert x (toValue (eval env e)) env)
+exec env Skip = ([], env)
+exec env (p `Then` q) =
+  let
+    (envs1, env1) = exec env p
+    (envs2, env2) = exec env1 q
+  in (envs1 ++ envs2, env2)
+exec env (If e p1 p2) =
+  if eval env e
+  then exec env p1
+  else exec env p2
+exec env (While e p) =
+  if eval env e
+  then exec env (p `Then` While e p)
+  else exec env Skip
+exec env (Assert e) =
+  if eval env e
+  then exec env Skip
+  else error "assertion failed"
+exec env Point =
+  ([env], env)
 
 eval :: Env -> Expr a -> a
 eval _ (Value x) =
@@ -170,6 +258,10 @@ eval env (Restrict e1 e2) =
     arrayContents = Map.restrictKeys (arrayContents arr) (eval env e2) }
   where
     arr = eval env e1
+eval env (Sorted e) =
+  contents == sort contents
+  where
+    contents = Map.elems (arrayContents (eval env e))
 eval env (Interval e1 e2) =
   Set.fromList [eval env e1..eval env e2-1]
 eval env (Singleton e) =
@@ -183,7 +275,35 @@ evalRel Le = (<=)
 evalRel Gt = (>)
 evalRel Ge = (>=)
 
+genEnv :: Prog -> Gen Env
+genEnv = go Map.empty
+  where
+    go env (Arg (Var x :: Var a) cond prog) = do
+      env <-
+        (do
+           val <- arbitrary :: Gen a
+           return (Map.insert x (toValue val) env)) `suchThat`
+        (\env -> eval env cond)
+      go env prog
+    go env (Body _) = return env
+
 instance Pretty Prog where
+  pPrint prog =
+    text "input" $$
+    loop prog
+    where
+      loop (Arg (x :: Var a) cond prog) =
+        nest 2 (pPrint x <+> text ":" <+> text (typeName (undefined :: a)) <#> ppCond cond <#> text ";") $$
+        loop prog
+      loop (Body stmt) =
+        text "begin" $$
+        nest 2 (pPrint stmt) $$
+        text "end."
+      ppCond (Value (BoolVal True)) = pPrintEmpty
+      ppCond e =
+        text "such that" <+> pPrint e
+
+instance Pretty Stmt where
   pPrint (x := e) =
     hang (pPrint x <+> text ":=") 2 (pPrint e)
   pPrint Skip =
@@ -305,190 +425,17 @@ instance Pretty Value where
 instance Pretty (Var a) where
   pPrint (Var x) = text x
 
--- blah
--- blah
-  
-
--- run :: (Var -> Val) -> Prog -> Env -> Env
--- run var p env = runReader (execStateT (exec (return ()) p) env) var
-
--- collect :: (Var -> Val) -> Prog -> Env -> [Env]
--- collect var p env =
---   runReader (execWriterT (execStateT (exec (get >>= tell . return) p) env)) var
-
--- exec :: (MonadState Env m, MonadReader (Var -> Val) m) => m () -> Prog -> m ()
--- exec point (If e p1 p2) = do
---   Bool x <- evalM e
---   if x then exec point p1 else exec point p2
--- exec point (While e p) = do
---   Bool x <- evalM e
---   when x $ do { exec point p; exec point (While e p) }
--- exec point (p1 `Then` p2) = do
---   exec point p1
---   exec point p2
--- exec _ Skip = return ()
--- exec point Point = point
--- exec _ (x := e) = do
---   y <- evalM e
---   modify (Map.insert x y)
-
--- evalM :: (MonadState Env m, MonadReader (Var -> Val) m) => Exp -> m Val
--- evalM exp = do
---   env <- get
---   var <- ask
---   return (eval (env, var) exp)
-
--- instance Arbitrary Val where
---   shrink (Int x) = Int <$> shrink x
---   shrink (Value x) = Value <$> shrink x
---   shrink (Bool x) = Bool <$> shrink x
---   shrink (Array xs) = Array <$> sort <$> shrink xs
---   shrink _ = []
-
--- instance Typed Val where
---   typ Int{} = intTy
---   typ Value{} = valueTy
---   typ Bool{} = boolTy
---   typ Array{} = arrayTy
---   typ LePair{} = leTy
---   typ ElemPair{} = elemTy
---   typeSubst_ _ x = x
-
--- instance Pretty Val where
---   pPrint (Int x) = pPrint x
---   pPrint (Value x) = pPrint x
---   pPrint (Bool x) = pPrint x
---   pPrint (Array xs) = pPrint xs
-
--- instance PrettyTerm Val
-
--- instance Pretty ProgVar where
---   pPrint (V _ x) = text x
-
--- instance PrettyTerm ProgVar
-
--- instance Typed ProgVar where
---   typ (V ty _) = ty
---   typeSubst_ _ x = x
-
--- instance Arity Fun where
---   arity = typeArity . typ
-
--- instance Background Fun where
-
--- instance Pretty Fun where
---   pPrint (Val x) = pPrint x
---   pPrint (ProgVar x) = pPrint x
---   pPrint Not = text "~"
---   pPrint And = text "&"
---   pPrint (Eq _) = text "=="
---   pPrint (Le _) = text "<="
---   pPrint Plus = text "+"
---   pPrint Div = text "/"
---   pPrint Index = text "!"
---   pPrint Slice = text "slice"
---   pPrint Len = text "len"
---   pPrint Elem = text "in"
---   pPrint Le1 = text "le1"
---   pPrint Le2 = text "le2"
---   pPrint Elem1 = text "elem1"
---   pPrint Elem2 = text "elem2"
-
--- instance PrettyTerm Fun where
---   termStyle (Val x) = termStyle x
---   termStyle (ProgVar x) = termStyle x
---   termStyle Not = prefix
---   termStyle And = infixStyle 5
---   termStyle (Eq _) = infixStyle 5
---   termStyle (Le _) = infixStyle 5
---   termStyle Plus = infixStyle 5
---   termStyle Div = infixStyle 5
---   termStyle Index = infixStyle 5
---   termStyle Elem = infixStyle 5
---   termStyle _ = uncurried
-
--- instance Typed Fun where
---   typ (Val x) = typ x
---   typ (ProgVar x) = typ x
---   typ Not = arrowType [boolTy] boolTy
---   typ And = arrowType [boolTy, boolTy] boolTy
---   typ (Eq ty) = arrowType [ty, ty] boolTy
---   typ (Le ty) = arrowType [ty, ty] boolTy
---   typ Plus = arrowType [intTy, intTy] intTy
---   typ Div = arrowType [intTy, intTy] intTy
---   typ Index = arrowType [arrayTy, intTy] valueTy
---   typ Slice = arrowType [arrayTy, intTy, intTy] arrayTy
---   typ Len = arrowType [arrayTy] intTy
---   typ Elem = arrowType [valueTy, arrayTy] boolTy
---   typ Le1 = arrowType [leTy] valueTy
---   typ Le2 = arrowType [leTy] valueTy
---   typ Elem1 = arrowType [elemTy] valueTy
---   typ Elem2 = arrowType [elemTy] arrayTy
---   typeSubst_ _ x = x
-
 -- evalLHS :: (Env, Var -> Val) -> Equation (Term Fun) -> Bool
 -- evalLHS env (t :=: u) = eval env t == eval env u
 
 -- evalRHS :: (Env, Var -> Val) -> Equation (Term Fun) -> Property
 -- evalRHS env (t :=: u) = eval env t Test.QuickCheck.=== eval env u
 
--- eval :: (Env, Var -> Val) -> Term Fun -> Val
--- eval _ (App (Val x) []) = x
--- eval (_, env) (Var x) = env x
--- eval (env, _) (App (ProgVar x) []) =
---   Map.findWithDefault undefined x env
--- eval env (App Len [e]) =
---   let Array xs = eval env e in
---   Int (length xs)
--- eval env (App Not [e]) =
---   let Bool x = eval env e in
---   Bool (not x)
--- eval env (App And [e1, e2]) =
---   let Bool x = eval env e1
---       Bool y = eval env e2
---   in Bool (x && y)
--- eval env (App (Eq _) [e1, e2]) =
---   Bool (eval env e1 == eval env e2)
--- eval env (App (Le _) [e1, e2]) =
---   let x = eval env e1
---       y = eval env e2
---   in Bool (x <= y)
--- eval env (App Plus [e1, e2]) =
---   let Int x = eval env e1
---       Int y = eval env e2
---   in Int (x + y)
--- eval env (App Div [e1, e2]) =
---   let Int x = eval env e1
---       Int y = eval env e2
---   in Int (x `div` y)
--- eval env (App Index [e1, e2]) =
---   let Array xs = eval env e1
---       Int i = eval env e2
---   in if i >= 0 && i < length xs then Value (xs !! i) else Value (-1)
--- eval env (App Slice [e1, e2, e3]) =
---   let Array xs = eval env e1
---       Int i = eval env e2
---       Int j = eval env e3
---   in Array (drop i (take j xs))
--- eval env (App Elem [e1, e2]) =
---   let Value x = eval env e1
---       Array xs = eval env e2
---   in Bool (x `elem` xs)
--- eval env (App Le1 [e]) =
---   let LePair x _ = eval env e
---   in Value x
--- eval env (App Le2 [e]) =
---   let LePair _ y = eval env e
---   in Value y
--- eval env (App Elem1 [e]) =
---   let ElemPair x _ = eval env e
---   in Value x
--- eval env (App Elem2 [e]) =
---   let ElemPair _ y = eval env e
---   in Array y
-
 bsearch :: Prog
 bsearch =
+  Arg arr (Sorted (Local arr)) $
+  Arg x (Value (BoolVal True)) $
+  Body $
   lo := Lower (Local arr) `Then`
   hi := Upper (Local arr) `Then`
   found := Value (BoolVal False) `Then`
@@ -517,28 +464,6 @@ arr = Var "arr"
 
 found :: Var Bool
 found = Var "found"
-
--- intTy, valueTy, boolTy, arrayTy, leTy, elemTy :: Type
--- intTy = typeOf (undefined :: Int)
--- valueTy = typeOf (undefined :: Value)
--- boolTy = typeOf (undefined :: Bool)
--- arrayTy = typeOf (undefined :: [Int])
--- leTy = typeOf (undefined :: LeTy)
--- elemTy = typeOf (undefined :: ElemTy)
-
--- newtype Value = MkValue Int deriving (Eq, Ord, Show, Arbitrary, Num, Pretty)
-
--- data LeTy
--- data ElemTy
-
--- bsearchEnv :: Value -> [Value] -> Int -> Int -> Bool -> Int -> Env
--- bsearchEnv vx varr vlo vhi vfound vidx =
---   Map.fromList [(x, Value vx), (arr, Array varr), (lo, Int vlo), (hi, Int vhi), (found, Bool vfound), (idx, Int vidx)]
-
--- newtype SortedList a = SortedList [a] deriving (Eq, Ord, Show)
-
--- instance (Ord a, Arbitrary a) => Arbitrary (SortedList a) where
---   arbitrary = SortedList . sort <$> arbitrary
 
 -- genEnv :: Gen Env
 -- genEnv = do
@@ -641,7 +566,7 @@ found = Var "found"
 --   let
 --     n = 7
 --     present qc prop =
---       when (ok prop && not (null (intersect [ProgVar found, ProgVar idx] (funs prop)))) $ do
+--       when (ok prop && not (null (intersect [StmtVar found, StmtVar idx] (funs prop)))) $ do
 --         putLine (prettyShow (prettyProp (const ["x","y","z"]) (conditionalise prop)))
 --         when qc (liftIO (quickCheck prop))
 --     ok (_ :=>: t :=: u) | typ t == boolTy, size u > 1 = False
