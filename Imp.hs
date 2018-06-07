@@ -34,6 +34,9 @@ import Control.Monad
 import Data.Maybe
 import Data.List
 import Test.QuickCheck hiding (Ordered)
+import Control.Enumerable
+import Data.Reflection
+import Control.Search(testTime)
 
 data Prog where
   Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
@@ -93,6 +96,14 @@ data Value =
   ArrayVal (Array Integer)
   deriving (Eq, Ord, Show)
 
+shrinkValue :: Value -> [Value]
+shrinkValue (IndexVal x) = IndexVal <$> shrink x
+shrinkValue (BoolVal x) = BoolVal <$> shrink x
+shrinkValue (IntegerVal x) = IntegerVal <$> shrink x
+shrinkValue (SetIntegerVal x) = SetIntegerVal <$> shrink x
+shrinkValue (SetIndexVal x) = SetIndexVal <$> shrink x
+shrinkValue (ArrayVal x) = ArrayVal <$> shrink x
+
 data Array a =
   Array {
     arrayLower :: Index,
@@ -125,11 +136,24 @@ instance Arbitrary a => Arbitrary (Array a) where
 
 newtype Index = Index Int deriving (Eq, Ord, Show, Num, Enum, Integral, Real, Pretty, Arbitrary)
 
+instance Enumerable Index where
+  enumerate = datatype [c1 Index]
+
+instance (Ord a, Enumerable a) => Enumerable (Set a) where
+  enumerate = datatype [c1 Set.fromList]
+
+instance (Ord a, Enumerable a) => Enumerable (Array a) where
+  enumerate = datatype [c2 arr]
+    where
+      arr base contents =
+        Array base (base + fromIntegral (length contents))
+          (Map.fromList (zip [base..] contents))
+
 data Var a = Var String deriving (Eq, Ord, Show)
 
 type Env = Map String Value
 
-class Arbitrary a => Type a where
+class (Arbitrary a, Enumerable a) => Type a where
   toValue :: a -> Value
   fromValue :: Value -> Maybe a
   typeName :: a -> String
@@ -198,10 +222,8 @@ eval :: Env -> Expr a -> a
 eval _ (Value x) =
   fromMaybe (error "ill-typed expression") (fromValue x)
 eval env (Local (Var x)) =
-  fromMaybe (error "ill-typed expression") $
-  fromValue $
-  fromMaybe (error ("variable " ++ x ++ " not bound")) $
-  Map.lookup x env
+  fromMaybe (error "ill-typed expression") $ fromValue $
+  Map.findWithDefault (error ("variable " ++ x ++ " not bound")) x env
 eval env (Not e) =
   not (eval env e)
 eval env (And e1 e2) =
@@ -259,9 +281,12 @@ eval env (Restrict e1 e2) =
   where
     arr = eval env e1
 eval env (Sorted e) =
-  contents == sort contents
+  sorted contents
   where
     contents = Map.elems (arrayContents (eval env e))
+    sorted [] = True
+    sorted [_] = True
+    sorted (x:y:xs) = x <= y && sorted (y:xs)
 eval env (Interval e1 e2) =
   Set.fromList [eval env e1..eval env e2-1]
 eval env (Singleton e) =
@@ -287,13 +312,37 @@ genEnv = go Map.empty
       go env prog
     go env (Body _) = return env
 
+shrinkEnv :: Prog -> Env -> [Env]
+shrinkEnv prog env =
+  filter (checkEnv prog) (map Map.fromList (shr (Map.toList env)))
+  where
+    shr [] = []
+    shr ((x,v):xs) =
+      [(x,v'):xs | v' <- shrinkValue v] ++
+      map ((x,v):) (shr xs)
+
+checkEnv :: Prog -> Env -> Bool
+checkEnv (Arg _ cond prog) env =
+  eval env cond && checkEnv prog env
+checkEnv (Body _) _ = True
+
+enumEnv :: forall f. (Typeable f, Sized f) => Prog -> Shareable f Env
+enumEnv (Body _) = c0 Map.empty
+enumEnv (Arg (Var x :: Var a) _ prog) =
+  ins <$> (access :: Shareable f a) <*> enumEnv prog
+  where
+    ins val env = Map.insert x (toValue val) env
+
+instance Given Prog => Enumerable Env where
+  enumerate = share (enumEnv given)
+
 instance Pretty Prog where
   pPrint prog =
     text "input" $$
     loop prog
     where
       loop (Arg (x :: Var a) cond prog) =
-        nest 2 (pPrint x <+> text ":" <+> text (typeName (undefined :: a)) <#> ppCond cond <#> text ";") $$
+        nest 2 (pPrint x <+> text ":" <+> text (typeName (undefined :: a)) <+> ppCond cond <#> text ";") $$
         loop prog
       loop (Body stmt) =
         text "begin" $$
@@ -344,14 +393,14 @@ instance Pretty (Expr a) where
       oper p prec name e1 e2 =
         parIf (p > prec) $
           hang
-            (pPrintPrec l (p+1) e1 <+> text name) 2
-            (pPrintPrec l (p+1) e2)
+            (pPrintPrec l (prec+1) e1 <+> text name) 2
+            (pPrintPrec l (prec+1) e2)
 
       -- Precedence levels:
       -- 0: and, or
       -- 1: relations
       -- 2: not
-      -- 3: +
+      -- 3: +, sorted
       -- 4: div
       -- 5: restrict
       -- 6: image
@@ -362,7 +411,7 @@ instance Pretty (Expr a) where
         pPrint x
       exp p (Not e) =
         parIf (p > 2) $
-          text "not" <+> pPrintPrec l (p+1) e
+          text "not" <+> pPrintPrec l 3 e
       exp p (And e1 e2) =
         oper p 0 "and" e1 e2
       exp p (Or e1 e2) =
@@ -384,12 +433,15 @@ instance Pretty (Expr a) where
       exp p (Update e1 e2 e3) =
         exp inf e1 <#> braces (exp 0 e2 <+> text "->" <#> exp 0 e3)
       exp p (Lower e) =
-        text "lower" <+> exp inf e
+        text "lower" <#> parens (exp 0 e)
       exp p (Upper e) =
-        text "upper" <+> exp inf e
+        text "upper" <#> parens (exp 0 e)
       exp p (Image e) =
         parIf (p > 6) $
-          text "image" <+> exp 7 e
+          text "image" <#> parens (exp 0 e)
+      exp p (Sorted e) =
+        parIf (p > 3) $
+          text "sorted" <#> parens (exp 0 e)
       exp p (Concat e1 e2 e3) =
         text "concat" <#> parens (fsep (punctuate (text ", ") [exp 0 e1, exp 0 e2, exp 0 e3]))
       exp p (Restrict e1 e2) =
@@ -446,7 +498,7 @@ bsearch =
      If (Rel Eq (Local x) (At (Local arr) (Local mid)))
        (found := Value (BoolVal True) `Then` idx := Local mid)
        (If (Rel Le (Local x) (At (Local arr) (Local mid)))
-         (hi := Minus (Local mid) (Value (IndexVal 1)))
+         (hi := Local mid) -- Minus (Local mid) (Value (IndexVal 1)))
          (lo := Plus (Local mid) (Value (IndexVal 1))))) `Then`
   Point
 
@@ -520,14 +572,34 @@ found = Var "found"
 -- genPoint gen =
 --   ((collect undefined bsearch <$> gen) `suchThat` (not . null)) >>= elements
 
--- prop_bsearch :: Value -> SortedList Value -> Bool
--- prop_bsearch x (SortedList xs) =
---   found_ == (x `elem` xs) &&
---   (not found_ || xs !! idx_ == x)
---   where
---     res = run undefined bsearch (bsearchEnv x xs undefined undefined undefined undefined)
---     Bool found_ = Map.findWithDefault undefined found res
---     Int idx_ = Map.findWithDefault undefined idx res
+prop_bsearch :: Property
+prop_bsearch =
+  forAllShrink (genEnv bsearch) (shrinkEnv bsearch) $ \env0 ->
+  let
+    (_, env) = exec env0 (body bsearch)
+    found_ = eval env (Local found)
+    idx_ = eval env (Local idx)
+    x_ = eval env (Local x)
+    arr_ = arrayContents (eval env (Local arr))
+  in
+    collect (length (Map.elems arr_)) $
+    found_ == (x_ `elem` Map.elems arr_) &&
+    (not found_ || Map.lookup idx_ arr_ == Just x_)
+
+test_bsearch :: IO ()
+test_bsearch =
+  give bsearch $
+  testTime 10 $ \env0 ->
+  not (checkEnv bsearch env0) ||
+  let
+    (_, env) = exec env0 (body bsearch)
+    found_ = eval env (Local found)
+    idx_ = eval env (Local idx)
+    x_ = eval env (Local x)
+    arr_ = arrayContents (eval env (Local arr))
+  in
+    found_ == (x_ `elem` Map.elems arr_) &&
+    (not found_ || Map.lookup idx_ arr_ == Just x_)
 
 -- instance Sized Fun where
 --   size _ = 1
