@@ -339,10 +339,16 @@ enumEnv (Arg (Var x :: Var a) _ prog) =
   where
     ins val env = Map.insert x (toValue val) env
 
+newtype PP a = PP a
+instance Enumerable a => Enumerable (PP a) where
+  enumerate = datatype [c1 PP]
+instance Pretty a => Show (PP a) where
+  show (PP x) = show (pPrint x)
+
 testProg :: Prog -> IO ()
 testProg prog =
   give prog $
-  testTime 30 $ \env ->
+  testTime 30 $ \(PP env) ->
   not (checkEnv prog env) || isJust (spoon (exec env (body prog)))
 
 instance Given Prog => Enumerable Env where
@@ -483,7 +489,6 @@ instance Pretty Value where
   pPrint (SetIntegerVal x) = pPrint x
   pPrint (SetIndexVal x) = pPrint x
   pPrint (ArrayVal arr) =
-    brackets (pPrint (arrayLower arr) <> text ".." <> pPrint (arrayUpper arr)) <>
     pPrint (arrayContents arr)
 
 instance Pretty (Var a) where
