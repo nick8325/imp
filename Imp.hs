@@ -391,7 +391,7 @@ instance Pretty Stmt where
     nest 2 (pPrint p) $$
     text "end"
   pPrint (Assert e) =
-    text "{" <+> pPrint e <+> text "}"
+    text "assert" <#> parens (pPrint e)
   pPrint Point =
     text "{ ? }"
 
