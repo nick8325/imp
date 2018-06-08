@@ -7,6 +7,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveGeneric #-}
 import qualified Data.Map.Strict as Map
 import Data.Map(Map)
 import qualified Data.Set as Set
@@ -36,7 +37,10 @@ import Data.List
 import Test.QuickCheck hiding (Ordered)
 import Control.Enumerable
 import Data.Reflection
-import Control.Search(testTime)
+import Control.Search hiding (Not, And)
+import Control.Spoon
+import Control.DeepSeq
+import GHC.Generics
 
 data Prog where
   Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
@@ -94,7 +98,8 @@ data Value =
   IndexVal Index | BoolVal Bool | IntegerVal Integer |
   SetIntegerVal (Set Integer) | SetIndexVal (Set Index) |
   ArrayVal (Array Integer)
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
+instance NFData Value
 
 shrinkValue :: Value -> [Value]
 shrinkValue (IndexVal x) = IndexVal <$> shrink x
@@ -109,7 +114,8 @@ data Array a =
     arrayLower :: Index,
     arrayUpper :: Index,
     arrayContents :: Map Index a }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
+instance NFData a => NFData (Array a)
 
 instance Arbitrary a => Arbitrary (Array a) where
   arbitrary = do
@@ -134,7 +140,7 @@ instance Arbitrary a => Arbitrary (Array a) where
           Array l u
             (Map.filterWithKey (\k _ -> k >= l && k < u) (arrayContents arr))
 
-newtype Index = Index Int deriving (Eq, Ord, Show, Num, Enum, Integral, Real, Pretty, Arbitrary)
+newtype Index = Index Int deriving (Eq, Ord, Show, Num, Enum, Integral, Real, Pretty, Arbitrary, Generic, NFData)
 
 instance Enumerable Index where
   enumerate = datatype [c1 Index]
@@ -333,6 +339,12 @@ enumEnv (Arg (Var x :: Var a) _ prog) =
   where
     ins val env = Map.insert x (toValue val) env
 
+testProg :: Prog -> IO ()
+testProg prog =
+  give prog $
+  testTime 30 $ \env ->
+  not (checkEnv prog env) || isJust (spoon (exec env (body prog)))
+
 instance Given Prog => Enumerable Env where
   enumerate = share (enumEnv given)
 
@@ -492,15 +504,16 @@ bsearch =
   hi := Upper (Local arr) `Then`
   found := Value (BoolVal False) `Then`
   While (And (Not (Local found)) (Rel Lt (Local lo) (Local hi)))
-    (Assert (Not (Local found)) `Then`
-     Assert (Pairwise Ne (Singleton (Local x)) (Image (Restrict (Local arr) (Interval (Lower (Local arr)) (Local lo))))) `Then`
-     mid := Div (Plus (Local lo) (Local hi)) (Value (IndexVal 2)) `Then`
+    (mid := Div (Plus (Local lo) (Local hi)) (Value (IndexVal 2)) `Then`
      If (Rel Eq (Local x) (At (Local arr) (Local mid)))
        (found := Value (BoolVal True) `Then` idx := Local mid)
        (If (Rel Le (Local x) (At (Local arr) (Local mid)))
-         (hi := Local mid) -- Minus (Local mid) (Value (IndexVal 1)))
+         (hi := Local mid)
+         -- (hi := Minus (Local mid) (Value (IndexVal 1)))
          (lo := Plus (Local mid) (Value (IndexVal 1))))) `Then`
-  Point
+  If (Local found)
+    (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
+    (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
 
 x :: Var Integer
 x = Var "x"
@@ -571,35 +584,6 @@ found = Var "found"
 -- genPoint :: Gen Env -> Gen Env
 -- genPoint gen =
 --   ((collect undefined bsearch <$> gen) `suchThat` (not . null)) >>= elements
-
-prop_bsearch :: Property
-prop_bsearch =
-  forAllShrink (genEnv bsearch) (shrinkEnv bsearch) $ \env0 ->
-  let
-    (_, env) = exec env0 (body bsearch)
-    found_ = eval env (Local found)
-    idx_ = eval env (Local idx)
-    x_ = eval env (Local x)
-    arr_ = arrayContents (eval env (Local arr))
-  in
-    collect (length (Map.elems arr_)) $
-    found_ == (x_ `elem` Map.elems arr_) &&
-    (not found_ || Map.lookup idx_ arr_ == Just x_)
-
-test_bsearch :: IO ()
-test_bsearch =
-  give bsearch $
-  testTime 10 $ \env0 ->
-  not (checkEnv bsearch env0) ||
-  let
-    (_, env) = exec env0 (body bsearch)
-    found_ = eval env (Local found)
-    idx_ = eval env (Local idx)
-    x_ = eval env (Local x)
-    arr_ = arrayContents (eval env (Local arr))
-  in
-    found_ == (x_ `elem` Map.elems arr_) &&
-    (not found_ || Map.lookup idx_ arr_ == Just x_)
 
 -- instance Sized Fun where
 --   size _ = 1
