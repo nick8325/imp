@@ -34,10 +34,10 @@ import Control.Monad
 -- import QuickSpec.Prop
 import Data.Maybe
 import Data.List
-import Test.QuickCheck hiding (Ordered)
+import Test.QuickCheck hiding (Ordered, (==>))
 import Control.Enumerable
 import Data.Reflection
-import Control.Search hiding (Not, And)
+import Control.Search hiding (Not, And, (|||), (&&&), (==>), nott, true, false)
 import Control.Spoon
 import Control.DeepSeq
 import GHC.Generics
@@ -353,6 +353,77 @@ testProg prog =
 
 instance Given Prog => Enumerable Env where
   enumerate = share (enumEnv given)
+
+(|||), (&&&), (==>) :: Expr Bool -> Expr Bool -> Expr Bool
+x ||| Value (BoolVal False) = x
+Value (BoolVal False) ||| x = x
+_ ||| Value (BoolVal True) = Value (BoolVal True)
+Value (BoolVal True) ||| _ = Value (BoolVal True)
+x ||| y = Or x y
+x &&& Value (BoolVal True) = x
+Value (BoolVal True) &&& x = x
+_ &&& Value (BoolVal False) = Value (BoolVal False)
+Value (BoolVal False) &&& _ = Value (BoolVal False)
+x &&& y = And x y
+Value (BoolVal True) ==> x = x
+Value (BoolVal False) ==> x = Value (BoolVal True)
+x ==> y = nott x ||| y
+
+nott :: Expr Bool -> Expr Bool
+nott (Value (BoolVal True)) = Value (BoolVal False)
+nott (Value (BoolVal False)) = Value (BoolVal True)
+nott (Not x) = x
+nott x = Not x
+
+true, false :: Expr Bool
+true = Value (BoolVal True)
+false = Value (BoolVal False)
+
+preProg :: Prog -> Expr Bool
+preProg (Arg _ cond prog) = cond &&& preProg prog
+preProg (Body stmt) = pre stmt
+  
+pre :: Stmt -> Expr Bool
+pre stmt = fst (pre' stmt)
+  where
+    -- Boolean: was the statement side effect-free?
+    pre' (_ := _) = (true, False)
+    pre' Skip = (true, True)
+    pre' (p `Then` q) =
+      case pre' p of
+        (e, False) -> (e, False)
+        (e, True) ->
+          let (e', b) = pre' q in
+          (e &&& e', b)
+    pre' (If cond p q) =
+      let
+        (e1, b1) = pre' p
+        (e2, b2) = pre' q
+      in ((cond ==> e1) &&& (nott cond ==> e2), b1 && b2)
+    pre' (While _ _) = (true, False)
+    pre' (Assert e) = (e, True)
+    pre' Point = (true, True)
+
+post :: Stmt -> Expr Bool
+post stmt = fst (post' stmt)
+  where
+    -- Boolean: was the statement side effect-free?
+    post' (_ := _) = (true, False)
+    post' Skip = (true, True)
+    post' (p `Then` q) =
+      case post' q of
+        (e, False) -> (e, False)
+        (e, True) ->
+          let (e', b) = post' p in
+          (e &&& e', b)
+    post' (If cond p q) =
+      case (post' p, post' q) of
+        ((e1, True), (e2, True)) ->
+          ((cond ==> e1) &&& (nott cond ==> e2), True)
+        _ -> (true, False)
+    post' (While _ _) = (true, False)
+    post' (Assert e) = (e, True)
+    post' Point = (true, True)
 
 instance Pretty Prog where
   pPrint prog =
