@@ -473,7 +473,7 @@ instance Pretty Stmt where
     text "{ ? }"
 
 instance Pretty (Expr a) where
-  pPrintPrec l p e = exp 0 e
+  pPrintPrec l p e = exp p e
     where
       parIf True x = parens x
       parIf False x = x
