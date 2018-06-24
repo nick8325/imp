@@ -8,12 +8,17 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE UndecidableInstances #-}
 import qualified Data.Map.Strict as Map
 import Data.Map(Map)
 import qualified Data.Set as Set
 import Data.Set(Set)
 import Twee.Pretty
 import Control.Monad
+import QuickSpec.Term hiding (Var, Sized)
+import qualified QuickSpec.Term as QS
+import Data.Typeable
 -- import Data.List hiding (lookup)
 -- import Data.Maybe
 -- import Data.Typeable(cast)
@@ -41,6 +46,7 @@ import Control.Search hiding (Not, And, (|||), (&&&), (==>), nott, true, false)
 import Control.Spoon
 import Control.DeepSeq
 import GHC.Generics
+import Data.Function
 
 data Prog where
   Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
@@ -55,39 +61,80 @@ data Stmt where
   Skip :: Stmt
   Then :: Stmt -> Stmt -> Stmt
   If :: Expr Bool -> Stmt -> Stmt -> Stmt
-  While :: Expr Bool -> Stmt -> Stmt
+  While :: Expr Bool -> Expr Bool -> Stmt -> Stmt
   Assert :: Expr Bool -> Stmt
   Point :: Stmt
 deriving instance Show Stmt
 
 data Expr a where
-  Value :: Type a => Value -> Expr a
-  Local :: Type a => Var a -> Expr a
+  Value   :: Type a => Value -> Expr a
+  Local   :: Type a => Var a -> Expr a
+  Unknown :: Type a => Unknown a -> Expr a
   -- Boolean expressions
   Not :: Expr Bool -> Expr Bool
   And :: Expr Bool -> Expr Bool -> Expr Bool
   Or  :: Expr Bool -> Expr Bool -> Expr Bool
   -- Arithmetic expressions
-  Plus :: Num a => Expr a -> Expr a -> Expr a
-  Minus :: Num a => Expr a -> Expr a -> Expr a
-  Div  :: Integral a => Expr a -> Expr a -> Expr a
+  Plus1 :: (Type a, Num a, a ~ Integer) => Expr a -> Expr a -> Expr a
+  Plus2 :: (Type a, Num a, a ~ Index) => Expr a -> Expr a -> Expr a
+  Minus1 :: (Type a, Num a, a ~ Integer) => Expr a -> Expr a -> Expr a
+  Minus2 :: (Type a, Num a, a ~ Index) => Expr a -> Expr a -> Expr a
+  Div1  :: (Type a, Integral a, a ~ Integer) => Expr a -> Expr a -> Expr a
+  Div2  :: (Type a, Integral a, a ~ Index) => Expr a -> Expr a -> Expr a
   -- Relations
-  Rel :: Ord a => Relation -> Expr a -> Expr a -> Expr Bool
-  Pairwise :: Ord a => Relation -> Expr (Set a) -> Expr (Set a) -> Expr Bool
-  Ordered :: Ord a => Relation -> Expr (Array a) -> Expr (Array a) -> Expr Bool
+  Rel1 :: (Type a, Ord a, a ~ Integer) => Relation -> Expr a -> Expr a -> Expr Bool
+  Rel2 :: (Type a, Ord a, a ~ Index) => Relation -> Expr a -> Expr a -> Expr Bool
+  Pairwise1 :: (Type a, Ord a, a ~ Integer) => Relation -> Expr (Set a) -> Expr (Set a) -> Expr Bool
+  Pairwise2 :: (Type a, Ord a, a ~ Index) => Relation -> Expr (Set a) -> Expr (Set a) -> Expr Bool
+  Ordered :: (Type a, Ord a, a ~ Integer) => Relation -> Expr (Array a) -> Expr (Array a) -> Expr Bool
   -- Arrays
-  At :: Expr (Array a) -> Expr Index -> Expr a
-  Update :: Ord a => Expr (Array a) -> Expr Index -> Expr a -> Expr (Array a)
-  Lower :: Expr (Array a) -> Expr Index
-  Upper :: Expr (Array a) -> Expr Index
-  Image :: Ord a => Expr (Array a) -> Expr (Set a)
+  At :: a ~ Integer => Expr (Array a) -> Expr Index -> Expr a
+  Update :: (Type a, Ord a) => Expr (Array a) -> Expr Index -> Expr a -> Expr (Array a)
+  Lower :: Expr (Array Integer) -> Expr Index
+  Upper :: Expr (Array Integer) -> Expr Index
+  Image :: (Type (Array a), Ord a) => Expr (Array a) -> Expr (Set a)
   Concat :: Expr Index -> Expr (Array a) -> Expr (Array a) -> Expr (Array a)
   Restrict :: Expr (Array a) -> Expr (Set Index) -> Expr (Array a)
-  Sorted :: Ord a => Expr (Array a) -> Expr Bool
+  Sorted :: (Type (Array a), Ord a) => Expr (Array a) -> Expr Bool
   -- Sets
   Interval :: Expr Index -> Expr Index -> Expr (Set Index)
-  Singleton :: Ord a => Expr a -> Expr (Set a)
+  Singleton1 :: (Type a, Ord a, a ~ Integer) => Expr a -> Expr (Set a)
+  Singleton2 :: (Type a, Ord a, a ~ Index) => Expr a -> Expr (Set a)
 deriving instance Show (Expr a)
+
+mapExpr :: (forall a. Expr a -> Expr a) -> Expr a -> Expr a
+mapExpr f e = rec e
+  where
+    rec :: forall a. Expr a -> Expr a
+    rec e = f (sub e)
+
+    sub :: forall a. Expr a -> Expr a
+    sub (Not e) = Not (rec e)
+    sub (And e1 e2) = And (rec e1) (rec e2)
+    sub (Or e1 e2) = Or (rec e1) (rec e2)
+    sub (Plus1 e1 e2) = Plus1 (rec e1) (rec e2)
+    sub (Plus2 e1 e2) = Plus2 (rec e1) (rec e2)
+    sub (Minus1 e1 e2) = Minus1 (rec e1) (rec e2)
+    sub (Minus2 e1 e2) = Minus2 (rec e1) (rec e2)
+    sub (Div1 e1 e2) = Div1 (rec e1) (rec e2)
+    sub (Div2 e1 e2) = Div2 (rec e1) (rec e2)
+    sub (Rel1 r e1 e2) = Rel1 r (rec e1) (rec e2)
+    sub (Rel2 r e1 e2) = Rel2 r (rec e1) (rec e2)
+    sub (Pairwise1 r e1 e2) = Pairwise1 r (rec e1) (rec e2)
+    sub (Pairwise2 r e1 e2) = Pairwise2 r (rec e1) (rec e2)
+    sub (Ordered r e1 e2) = Ordered r (rec e1) (rec e2)
+    sub (At e1 e2) = At (rec e1) (rec e2)
+    sub (Update e1 e2 e3) = Update (rec e1) (rec e2) (rec e3)
+    sub (Lower e) = Lower (rec e)
+    sub (Upper e) = Upper (rec e)
+    sub (Image e) = Image (rec e)
+    sub (Concat e1 e2 e3) = Concat (rec e1) (rec e2) (rec e3)
+    sub (Restrict e1 e2) = Restrict (rec e1) (rec e2)
+    sub (Sorted e) = Sorted (rec e)
+    sub (Interval e1 e2) = Interval (rec e1) (rec e2)
+    sub (Singleton1 e) = Singleton1 (rec e)
+    sub (Singleton2 e) = Singleton2 (rec e)
+    sub e = e
 
 data Relation = Eq | Ne | Le | Lt | Ge | Gt deriving (Eq, Ord, Show)
 
@@ -117,13 +164,14 @@ data Array a =
   deriving (Eq, Ord, Show, Generic)
 instance NFData a => NFData (Array a)
 
-instance Arbitrary a => Arbitrary (Array a) where
+instance (Ord a, Arbitrary a) => Arbitrary (Array a) where
   arbitrary = do
     (m, n) <- arbitrary
     let
       lower = min m n
       upper = max m n
-    contents <- Map.fromList <$> zip [lower..upper-1] <$> infiniteList
+    permute <- elements [id, sort]
+    contents <- Map.fromList <$> zip [lower..] <$> permute <$> vector (fromIntegral (upper-lower))
     return (Array lower upper contents)
   shrink arr =
     [shift (l-arrayLower arr) arr | l <- shrink (arrayLower arr)] ++
@@ -156,10 +204,12 @@ instance (Ord a, Enumerable a) => Enumerable (Array a) where
           (Map.fromList (zip [base..] contents))
 
 data Var a = Var String deriving (Eq, Ord, Show)
+data Unknown a = Skolem Integer deriving (Eq, Ord, Show)
 
-type Env = Map String Value
+newtype Env = Env (Map String Value)
+  deriving (Eq, Ord, Show, NFData, Pretty)
 
-class (Arbitrary a, Enumerable a) => Type a where
+class (Arbitrary a, Enumerable a, Typeable a) => Type a where
   toValue :: a -> Value
   fromValue :: Value -> Maybe a
   typeName :: a -> String
@@ -194,40 +244,50 @@ instance Type (Set Index) where
   fromValue _ = Nothing
   typeName _ = "set of index"
 
-instance Type (Array Integer) where
+instance a ~ Integer => Type (Array a) where
   toValue = ArrayVal
   fromValue (ArrayVal x) = Just x
   fromValue _ = Nothing
   typeName _ = "array of integer"
 
-exec :: Env -> Stmt -> ([Env], Env)
-exec env (Var x := e) =
-  ([], Map.insert x (toValue (eval env e)) env)
-exec env Skip = ([], env)
-exec env (p `Then` q) =
+exec :: Env -> Expr Bool -> Stmt -> ([(Env, Expr Bool)], Env, Expr Bool)
+exec (Env env) _ (Var x := e) =
+  ([], Env (Map.insert x (toValue (eval (Env env) e)) env), true)
+exec env pred Skip = ([], env, pred)
+exec env pred (p `Then` q) =
   let
-    (envs1, env1) = exec env p
-    (envs2, env2) = exec env1 q
-  in (envs1 ++ envs2, env2)
-exec env (If e p1 p2) =
+    (envs1, env1, pred1) = exec env pred p
+    (envs2, env2, pred2) = exec env1 pred1 q
+  in (envs1 ++ envs2, env2, pred2)
+exec env pred (If e p1 p2) =
   if eval env e
-  then exec env p1
-  else exec env p2
-exec env (While e p) =
+  then exec env (pred &&& refine env e) p1
+  else exec env (pred &&& refine env e) p2
+exec env pred (While e1 e2 p) =
+  if eval env e2 then
+    if eval env e1
+    then exec env (e2 &&& refine env e1) (p `Then` While e1 e2 p)
+    else exec env (e2 &&& refine env e1) Skip
+  else error "invariant false"
+exec env pred (Assert e) =
   if eval env e
-  then exec env (p `Then` While e p)
-  else exec env Skip
-exec env (Assert e) =
-  if eval env e
-  then exec env Skip
+  then exec env (pred &&& e) Skip
   else error "assertion failed"
-exec env Point =
-  ([env], env)
+exec env pred Point =
+  ([(env, pred)], env, pred)
+
+refine :: Env -> Expr Bool -> Expr Bool
+refine env e =
+  foldr (&&&) true [ e' | e' <- cands, eval env e' ]
+  where
+    cands =
+      nubBy ((==) `on` show)
+        (subforms e ++ map nott (subforms e))
 
 eval :: Env -> Expr a -> a
 eval _ (Value x) =
   fromMaybe (error "ill-typed expression") (fromValue x)
-eval env (Local (Var x)) =
+eval (Env env) (Local (Var x)) =
   fromMaybe (error "ill-typed expression") $ fromValue $
   Map.findWithDefault (error ("variable " ++ x ++ " not bound")) x env
 eval env (Not e) =
@@ -236,15 +296,27 @@ eval env (And e1 e2) =
   eval env e1 && eval env e2
 eval env (Or e1 e2) =
   eval env e1 || eval env e2
-eval env (Plus e1 e2) =
+eval env (Plus1 e1 e2) =
   eval env e1 + eval env e2
-eval env (Minus e1 e2) =
+eval env (Plus2 e1 e2) =
+  eval env e1 + eval env e2
+eval env (Minus1 e1 e2) =
   eval env e1 - eval env e2
-eval env (Div e1 e2) =
+eval env (Minus2 e1 e2) =
+  eval env e1 - eval env e2
+eval env (Div1 e1 e2) =
   eval env e1 `div` eval env e2
-eval env (Rel r e1 e2) =
+eval env (Div2 e1 e2) =
+  eval env e1 `div` eval env e2
+eval env (Rel1 r e1 e2) =
   evalRel r (eval env e1) (eval env e2)
-eval env (Pairwise r e1 e2) =
+eval env (Rel2 r e1 e2) =
+  evalRel r (eval env e1) (eval env e2)
+eval env (Pairwise1 r e1 e2) =
+  and [evalRel r x y
+      | x <- Set.toList (eval env e1),
+        y <- Set.toList (eval env e2)]
+eval env (Pairwise2 r e1 e2) =
   and [evalRel r x y
       | x <- Set.toList (eval env e1),
         y <- Set.toList (eval env e2)]
@@ -295,8 +367,19 @@ eval env (Sorted e) =
     sorted (x:y:xs) = x <= y && sorted (y:xs)
 eval env (Interval e1 e2) =
   Set.fromList [eval env e1..eval env e2-1]
-eval env (Singleton e) =
+eval env (Singleton1 e) =
   Set.singleton (eval env e)
+eval env (Singleton2 e) =
+  Set.singleton (eval env e)
+
+subforms :: Expr Bool -> [Expr Bool]
+subforms e = e:properSubforms e
+  where
+    properSubforms :: Expr Bool -> [Expr Bool]
+    properSubforms (Not e) = subforms e
+    properSubforms (And e1 e2) = subforms e1 ++ subforms e2
+    properSubforms (Or e1 e2) = subforms e1 ++ subforms e2
+    properSubforms _ = []
 
 evalRel :: Ord a => Relation -> a -> a -> Bool
 evalRel Eq = (==)
@@ -307,20 +390,20 @@ evalRel Gt = (>)
 evalRel Ge = (>=)
 
 genEnv :: Prog -> Gen Env
-genEnv = go Map.empty
+genEnv = go (Env Map.empty)
   where
-    go env (Arg (Var x :: Var a) cond prog) = do
+    go (Env env) (Arg (Var x :: Var a) cond prog) = do
       env <-
         (do
            val <- arbitrary :: Gen a
-           return (Map.insert x (toValue val) env)) `suchThat`
+           return (Env (Map.insert x (toValue val) env))) `suchThat`
         (\env -> eval env cond)
       go env prog
     go env (Body _) = return env
 
 shrinkEnv :: Prog -> Env -> [Env]
-shrinkEnv prog env =
-  filter (checkEnv prog) (map Map.fromList (shr (Map.toList env)))
+shrinkEnv prog (Env env) =
+  filter (checkEnv prog) (map (Env . Map.fromList) (shr (Map.toList env)))
   where
     shr [] = []
     shr ((x,v):xs) =
@@ -333,11 +416,11 @@ checkEnv (Arg _ cond prog) env =
 checkEnv (Body _) _ = True
 
 enumEnv :: forall f. (Typeable f, Sized f) => Prog -> Shareable f Env
-enumEnv (Body _) = c0 Map.empty
+enumEnv (Body _) = c0 (Env Map.empty)
 enumEnv (Arg (Var x :: Var a) _ prog) =
   ins <$> (access :: Shareable f a) <*> enumEnv prog
   where
-    ins val env = Map.insert x (toValue val) env
+    ins val (Env env) = Env (Map.insert x (toValue val) env)
 
 newtype PP a = PP a
 instance Enumerable a => Enumerable (PP a) where
@@ -349,7 +432,20 @@ testProg :: Prog -> IO ()
 testProg prog =
   give prog $
   testTime 30 $ \(PP env) ->
-  not (checkEnv prog env) || isJust (spoon (exec env (body prog)))
+  not (checkEnv prog env) || isJust (spoon (result (exec env (preProg prog) (body prog))))
+  where
+    result (_, env, _) = env
+
+testProgOn :: Prog -> Env -> Bool
+testProgOn prog env =
+  checkEnv prog env &&
+  isJust (spoon (result (exec env true (body prog))))
+  where
+    result (_, env, _) = env
+
+instance Given Prog => Arbitrary Env where
+  arbitrary = genEnv given
+  shrink = shrinkEnv given
 
 instance Given Prog => Enumerable Env where
   enumerate = share (enumEnv given)
@@ -400,7 +496,7 @@ pre stmt = fst (pre' stmt)
         (e1, b1) = pre' p
         (e2, b2) = pre' q
       in ((cond ==> e1) &&& (nott cond ==> e2), b1 && b2)
-    pre' (While _ _) = (true, False)
+    pre' (While _ e _) = (e, False)
     pre' (Assert e) = (e, True)
     pre' Point = (true, True)
 
@@ -421,7 +517,7 @@ post stmt = fst (post' stmt)
         ((e1, True), (e2, True)) ->
           ((cond ==> e1) &&& (nott cond ==> e2), True)
         _ -> (true, False)
-    post' (While _ _) = (true, False)
+    post' (While e1 e2 _) = (nott e1 &&& e2, False)
     post' (Assert e) = (e, True)
     post' Point = (true, True)
 
@@ -463,8 +559,8 @@ instance Pretty Stmt where
       chain p =
         text "else" $$
         nest 2 (pPrint p)
-  pPrint (While e p) =
-    text "while" <+> pPrint e <+> text "do" $$
+  pPrint (While e1 e2 p) =
+    text "while" <+> pPrint e1 <+> text "invariant" <+> pPrint e2 <+> text "do" $$
     nest 2 (pPrint p) $$
     text "end"
   pPrint (Assert e) =
@@ -505,15 +601,25 @@ instance Pretty (Expr a) where
         oper p 0 "and" e1 e2
       exp p (Or e1 e2) =
         oper p 0 "or" e1 e2
-      exp p (Plus e1 e2) =
+      exp p (Plus1 e1 e2) =
         oper p 3 "+" e1 e2
-      exp p (Minus e1 e2) =
+      exp p (Plus2 e1 e2) =
+        oper p 3 "+" e1 e2
+      exp p (Minus1 e1 e2) =
         oper p 3 "-" e1 e2
-      exp p (Div e1 e2) =
+      exp p (Minus2 e1 e2) =
+        oper p 3 "-" e1 e2
+      exp p (Div1 e1 e2) =
         oper p 4 "div" e1 e2
-      exp p (Rel r e1 e2) =
+      exp p (Div2 e1 e2) =
+        oper p 4 "div" e1 e2
+      exp p (Rel1 r e1 e2) =
         oper p 1 (rel r) e1 e2
-      exp p (Pairwise r e1 e2) =
+      exp p (Rel2 r e1 e2) =
+        oper p 1 (rel r) e1 e2
+      exp p (Pairwise1 r e1 e2) =
+        oper p 1 (rel r ++ "*") e1 e2
+      exp p (Pairwise2 r e1 e2) =
         oper p 1 (rel r ++ "*") e1 e2
       exp p (Ordered r e1 e2) =
         oper p 1 (rel r ++ "O") e1 e2
@@ -538,7 +644,9 @@ instance Pretty (Expr a) where
       exp p (Interval e1 e2) =
         text "[" <#>
         cat [exp 0 e1 <#> text "..", exp 0 e2 <#> text ")"]
-      exp p (Singleton e) =
+      exp p (Singleton1 e) =
+        braces (exp 0 e)
+      exp p (Singleton2 e) =
         braces (exp 0 e)
   
       rel :: Relation -> String
@@ -565,11 +673,76 @@ instance Pretty Value where
 instance Pretty (Var a) where
   pPrint (Var x) = text x
 
--- evalLHS :: (Env, Var -> Val) -> Equation (Term Fun) -> Bool
--- evalLHS env (t :=: u) = eval env t == eval env u
+data Sym =
+  SymValue Value | SymLocal String TypeRep | SymUnknown Integer TypeRep |
+  SymNot | SymAnd | SymOr | SymPlus1 | SymPlus2 | SymMinus1 | SymMinus2 | SymDiv1 | SymDiv2 |
+  SymRel1 Relation | SymRel2 Relation | SymPairwise1 Relation | SymPairwise2 Relation | SymOrdered Relation |
+  SymAt | SymUpdate | SymLower | SymUpper | SymImage | SymConcat |
+  SymRestrict | SymSorted | SymInterval | SymSingleton1 | SymSingleton2
 
--- evalRHS :: (Env, Var -> Val) -> Equation (Term Fun) -> Property
--- evalRHS env (t :=: u) = eval env t Test.QuickCheck.=== eval env u
+toQS :: forall a. Type a => Expr a -> Term Sym
+toQS (Value x) = App (SymValue x) []
+toQS (Local (Var x)) = App (SymLocal x (typeOf (undefined :: a))) []
+toQS (Unknown (Skolem x)) = App (SymUnknown x (typeOf (undefined :: a))) []
+toQS (Not e) = App SymNot [toQS e]
+toQS (And e1 e2) = App SymAnd [toQS e1, toQS e2]
+toQS (Or e1 e2) = App SymOr [toQS e1, toQS e2]
+toQS (Plus1 e1 e2) = App SymPlus1 [toQS e1, toQS e2]
+toQS (Plus2 e1 e2) = App SymPlus2 [toQS e1, toQS e2]
+toQS (Minus1 e1 e2) = App SymMinus1 [toQS e1, toQS e2]
+toQS (Minus2 e1 e2) = App SymMinus2 [toQS e1, toQS e2]
+toQS (Div1 e1 e2) = App SymDiv1 [toQS e1, toQS e2]
+toQS (Div2 e1 e2) = App SymDiv2 [toQS e1, toQS e2]
+toQS (Rel1 r e1 e2) = App (SymRel1 r) [toQS e1, toQS e2]
+toQS (Rel2 r e1 e2) = App (SymRel2 r) [toQS e1, toQS e2]
+toQS (Pairwise1 r e1 e2) = App (SymPairwise1 r) [toQS e1, toQS e2]
+toQS (Pairwise2 r e1 e2) = App (SymPairwise2 r) [toQS e1, toQS e2]
+toQS (Ordered r e1 e2) = App (SymOrdered r) [toQS e1, toQS e2]
+toQS (At e1 e2) = App SymAt [toQS e1, toQS e2]
+toQS (Update e1 e2 e3) = App SymUpdate [toQS e1, toQS e2, toQS e3]
+toQS (Lower e) = App SymLower [toQS e]
+toQS (Upper e) = App SymUpper [toQS e]
+toQS (Image e) = App SymImage [toQS e]
+toQS (Concat e1 e2 e3) = App SymConcat [toQS e1, toQS e2, toQS e3]
+toQS (Restrict e1 e2) = App SymRestrict [toQS e1, toQS e2]
+toQS (Sorted e) = App SymSorted [toQS e]
+toQS (Interval e1 e2) = App SymInterval [toQS e1, toQS e2]
+toQS (Singleton1 e) = App SymSingleton1 [toQS e]
+toQS (Singleton2 e) = App SymSingleton2 [toQS e]
+
+fromQS :: forall a. Type a => Term Sym -> Maybe (Expr a)
+fromQS (App (SymValue x) []) = Just (Value x)
+fromQS (App (SymLocal x ty) [])
+  | typeOf (undefined :: a) == ty = Just (Local (Var x))
+  | otherwise = Nothing
+fromQS (App (SymUnknown x ty) [])
+  | typeOf (undefined :: a) == ty = Just (Unknown (Skolem x))
+  | otherwise = Nothing
+fromQS (App SymNot [e]) = (Not <$> fromQS e) >>= cast
+fromQS (App SymAnd [e1, e2]) = (And <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymOr [e1, e2]) = (Or <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymPlus1 [e1, e2]) = (Plus1 <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymPlus2 [e1, e2]) = (Plus2 <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymMinus1 [e1, e2]) = (Minus1 <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymMinus2 [e1, e2]) = (Minus2 <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymDiv1 [e1, e2]) = (Div1 <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymDiv2 [e1, e2]) = (Div2 <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App (SymRel1 r) [e1, e2]) = (Rel1 r <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App (SymRel2 r) [e1, e2]) = (Rel2 r <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App (SymPairwise1 r) [e1, e2]) = (Pairwise1 r <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App (SymPairwise2 r) [e1, e2]) = (Pairwise2 r <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App (SymOrdered r) [e1, e2]) = (Ordered r <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymAt [e1, e2]) = (At <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymUpdate [e1, e2, e3]) = (Update <$> fromQS e1 <*> fromQS e2 <*> fromQS e3) >>= cast
+fromQS (App SymLower [e]) = (Lower <$> fromQS e) >>= cast
+fromQS (App SymUpper [e]) = (Upper <$> fromQS e) >>= cast
+fromQS (App SymImage [e]) = (Image <$> fromQS e) >>= cast
+fromQS (App SymConcat [e1, e2, e3]) = (Concat <$> fromQS e1 <*> fromQS e2 <*> fromQS e3) >>= cast
+fromQS (App SymRestrict [e1, e2]) = (Restrict <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymSorted [e]) = (Sorted <$> fromQS e) >>= cast
+fromQS (App SymInterval [e1, e2]) = (Interval <$> fromQS e1 <*> fromQS e2) >>= cast
+fromQS (App SymSingleton1 [e]) = (Singleton1 <$> fromQS e) >>= cast
+fromQS (App SymSingleton2 [e]) = (Singleton2 <$> fromQS e) >>= cast
 
 bsearch :: Prog
 bsearch =
@@ -579,17 +752,19 @@ bsearch =
   lo := Lower (Local arr) `Then`
   hi := Upper (Local arr) `Then`
   found := Value (BoolVal False) `Then`
-  While (And (Not (Local found)) (Rel Lt (Local lo) (Local hi)))
-    (mid := Div (Plus (Local lo) (Local hi)) (Value (IndexVal 2)) `Then`
-     If (Rel Eq (Local x) (At (Local arr) (Local mid)))
+  While (And (Not (Local found)) (Rel2 Lt (Local lo) (Local hi))) (Value (BoolVal True))
+    (-- Point `Then`
+     mid := Div2 (Plus2 (Local lo) (Local hi)) (Value (IndexVal 2)) `Then`
+     If (Rel1 Eq (Local x) (At (Local arr) (Local mid)))
        (found := Value (BoolVal True) `Then` idx := Local mid)
-       (If (Rel Le (Local x) (At (Local arr) (Local mid)))
+       (If (Rel1 Le (Local x) (At (Local arr) (Local mid)))
          (hi := Local mid)
          -- (hi := Minus (Local mid) (Value (IndexVal 1)))
-         (lo := Plus (Local mid) (Value (IndexVal 1))))) `Then`
-  If (Local found)
-    (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
-    (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
+         (lo := Plus2 (Local mid) (Value (IndexVal 1))))) `Then`
+  Point
+  -- If (Local found)
+  --   (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
+  --   (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
 
 x :: Var Integer
 x = Var "x"
@@ -606,60 +781,16 @@ arr = Var "arr"
 found :: Var Bool
 found = Var "found"
 
--- genEnv :: Gen Env
--- genEnv = do
---   x <- arbitrary
---   SortedList xs <- arbitrary
---   lo <- arbitrary
---   hi <- arbitrary
---   found <- arbitrary
---   idx <- arbitrary
---   return (bsearchEnv x xs lo hi found idx)
-
--- genTestCase :: Gen Env
--- genTestCase = do
---   (x, xs) <- elements tests
---   lo <- arbitrary
---   hi <- arbitrary
---   found <- arbitrary
---   idx <- arbitrary
---   return (bsearchEnv x xs lo hi found idx)
-
--- tests :: [(Value, [Value])]
--- tests = [
---   (x1, [x1]),
---   (x3, [x1,x2,x3,x4,x5]),
---   (x6, [x1,x2,x3,x4]),
---   (x4, [x1,x2,x3,x5]),
---   (x5, [x1,x2,x3,x5])]
---   where
---     x1 = -123
---     x2 = -6
---     x3 = -2
---     x4 = 59
---     x5 = 102
---     x6 = 109
-
--- genVars :: Gen (Var -> Val)
--- genVars =
---   arbitraryFunction $ \(QS.V ty _) ->
---     case () of
---     _ | ty == intTy -> Int <$> arbitrary
---       | ty == valueTy -> Value <$> arbitrary
---       | ty == boolTy -> Bool <$> arbitrary
---       | ty == arrayTy -> Array <$> arbitrary
---       | ty == leTy -> do
---           x <- arbitrary
---           NonNegative k <- arbitrary
---           return (LePair x (x+k))
---       | ty == elemTy -> do
---           xs <- arbitrary `suchThat` (not . null)
---           x <- elements xs
---           return (ElemPair x xs)
-
--- genPoint :: Gen Env -> Gen Env
--- genPoint gen =
---   ((collect undefined bsearch <$> gen) `suchThat` (not . null)) >>= elements
+tests :: [Env]
+tests = map env [
+  (-123, [-123]),
+  (-2, [-123,-6,-2,59,102]),
+  (153, [-123,-6,-2,59]),
+  (59, [-123,-6,-2,102]),
+  (102, [-123,-6,-2,102])]
+  where
+    env (x, arr) =
+      Env $ Map.fromList [("x", IntegerVal x), ("arr", ArrayVal (Array 0 (Index (length arr)) (Map.fromList (zip [0..] arr))))]
 
 -- instance Sized Fun where
 --   size _ = 1
@@ -692,9 +823,9 @@ found = Var "found"
 --       shrinkElements [] = []
 --       shrinkElements ((k,x):xs) = [(k,y):xs | y<- shrink x] ++ [(k,x):ys | ys <- shrinkElements xs]
 
--- main = do
---   quickCheck prop_bsearch
---   quickCheck (forAll (elements tests) $ \(x, xs) -> prop_bsearch x (SortedList xs))
+main = do
+  give bsearch (quickCheck (\env -> testProgOn bsearch env))
+  quickCheck (forAll (elements tests) $ \env -> testProgOn bsearch env)
 --   let
 --     n = 7
 --     present qc prop =
