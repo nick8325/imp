@@ -460,16 +460,22 @@ genEnv = go (Env Map.empty)
       go env prog
     go env (Body _) = return env
 
-genPoint :: Prog -> Gen Env
-genPoint prog = do
-  envs <- do { env <- genEnv prog; let (points, _, _) = exec env true (body prog) in return (map fst points) } `suchThat` (not . null)
+genPointFrom :: Prog -> Gen Env -> Gen Env
+genPointFrom prog gen = do
+  envs <- do { env <- gen; let (points, _, _) = exec env true (body prog) in return (map fst points) } `suchThat` (not . null)
   elements envs
 
-genPost :: Prog -> Gen Env
-genPost prog = do
-  env <- genEnv prog
+genPoint :: Prog -> Gen Env
+genPoint prog = genPointFrom prog (genEnv prog)
+
+genPostFrom :: Prog -> Gen Env -> Gen Env
+genPostFrom prog gen = do
+  env <- gen
   let (_, env', _) = exec env true (body prog)
   return env'
+
+genPost :: Prog -> Gen Env
+genPost prog = genPostFrom prog (genEnv prog)
 
 genVars :: Gen (QS.Var -> Value)
 genVars =
@@ -899,15 +905,14 @@ bsearch =
   hi := Length (Local arr) `Then`
   found := Value (BoolVal False) `Then`
   While (And (Not (Local found)) (Rel2 Lt (Local lo) (Local hi))) (Value (BoolVal True))
-    (-- Point `Then`
+    (Point `Then`
      mid := Div2 (Plus2 (Local lo) (Local hi)) (Value (IndexVal 2)) `Then`
      If (Rel1 Eq (Local x) (At (Local arr) (Local mid)))
        (found := Value (BoolVal True) `Then` idx := Local mid)
        (If (Rel1 Le (Local x) (At (Local arr) (Local mid)))
          (hi := Local mid)
          -- (hi := Minus (Local mid) (Value (IndexVal 1)))
-         (lo := Plus2 (Local mid) (Value (IndexVal 1))))) `Then`
-  Point
+         (lo := Plus2 (Local mid) (Value (IndexVal 1)))))
   -- If (Local found)
   --   (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
   --   (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
@@ -1035,21 +1040,25 @@ data Options =
 
 data Option = Silent | QuickCheck deriving Eq
 data Category = Vars | Arith | Arrays deriving Eq
-data Environment = Background | Precondition | Postcondition | AtPoint
+data Environment = Background | Precondition | Postcondition | AtPoint | From [Env] | PostFrom [Env] | PointFrom [Env]
 
 genFor :: Prog -> Environment -> Gen Env
 genFor prog Background = return (Env Map.empty)
 genFor prog Precondition = genEnv prog
 genFor prog Postcondition = genPost prog
 genFor prog AtPoint = genPoint prog
+genFor prog (From envs) = elements envs
+genFor prog (PostFrom envs) = genPostFrom prog (elements envs)
+genFor prog (PointFrom envs) = genPointFrom prog (elements envs)
 
 enumerator :: Options -> Prog -> Enumerator (Term Sym)
 enumerator Options{..} prog =
   sortTerms measure $
   enumerateConstants (vars ++ locals ++ map (\x -> App x []) consts) `mappend` enumerateApplications
   where
-    vars = [QS.Var (QS.V ty 0) | Vars `elem` categories, ty <- tys]
-    locals = [toQS (Local x) | Some x <- args prog]
+    vars = [QS.Var (QS.V ty 0) | ty <- tys]
+    -- XXXX add all vars
+    locals = [toQS (Local x) | Some x <- args prog] ++ [toQS (Not (Local y)) | Some x <- args prog, Just y <- [cast x]]
     consts =
       [SymValue (BoolVal True),
        SymValue (BoolVal False),
@@ -1070,7 +1079,7 @@ enumerator Options{..} prog =
        [SymAt, SymUpdate, SymLength, SymImage, {-SymConcat,-}
         SymRestrict, SymUnion1, SymUnion2, SymInterval, SymSingleton1, SymSingleton2, SymNull1, SymNull2]
       | Arrays `elem` categories]
-    rels = [Le, Lt]
+    rels = [Le, Lt, Ne]
     tys = [QS.typeOf (undefined :: Integer), QS.typeOf (undefined :: Index), QS.typeOf (undefined :: Bool), QS.typeOf (undefined :: Set Index), QS.typeOf (undefined :: Set Integer), QS.typeOf (undefined :: Array Integer)]
 
 n = 7
@@ -1086,10 +1095,11 @@ qs opts@Options{..} prog =
       | typeArity (typ t) > 0 = Right t
       | isTypeVar (typ t) = Right t
       | otherwise = Left (evalTerm (env, var) t)
+    ground _ = True -- XXX
     present prop =
       {-when (ok prop && not (null (intersect [StmtVar found, StmtVar idx] (funs prop)))) $ -} do
         norm <- normaliser
-        unless (Silent `elem` options) $ do
+        unless (Silent `elem` options || (Vars `notElem` categories && not (ground prop))) $ do
           n <- lift $ lift get
           lift $ lift $ put $! n+1
           putLine (printf "%3d. " n ++ (prettyShow . fmap fromQS $ canonicalise $ ac norm $ conditionalise prop))
@@ -1115,7 +1125,18 @@ main = do
   withStdioTerminal $ Twee.run (Twee.Config n maxBound) $ flip evalStateT 0 $ do
     -- qs (Options [Silent] [Vars, Arith] Background) (Body Skip)
     putLine "== background =="
+    qs (Options [Silent] [Vars, Arith] Background) (Body Skip)
     qs (Options [] [Vars, Arith, Arrays] Background) (Body Skip)
     putLine ""
-    putLine "== precondition =="
-    qs (Options [] [Arith, Arrays, Vars] Precondition) bsearch
+    -- putLine "== precondition =="
+    -- qs (Options [] [Arith, Arrays, Vars] Precondition) bsearch
+
+    -- putLine "== postcondition =="
+    -- qs (Options [] [Arith, Arrays, Vars] Postcondition) bsearch
+
+    -- putLine "== point =="
+    -- qs (Options [] [Arith, Arrays, Vars] AtPoint) bsearch
+
+    putLine "== psychic =="
+    qs (Options [Silent] [Arith, Arrays, Vars] Postcondition) bsearch
+    qs (Options [] [Arith, Arrays, Vars] (PostFrom tests)) bsearch
