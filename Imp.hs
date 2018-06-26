@@ -57,6 +57,10 @@ import Debug.Trace
 import Control.Spoon
 import Numeric.Natural
 import QuickSpec.Pruning
+import GHC.Stack
+import Control.Monad.Trans.State.Strict
+import Text.Printf
+import Control.Monad.Trans.Class
 
 data Prog where
   Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
@@ -353,11 +357,13 @@ eval env (Plus2 e1 e2) =
 eval env (Minus1 e1 e2) =
   eval env e1 - eval env e2
 eval env (Minus2 e1 e2) =
-  eval env e1 - eval env e2
+  eval env e1 `safeMinus` eval env e2
+  where
+    safeMinus x y = if x < y then 0 else x - y
 eval env (Div1 e1 e2) =
-  eval env e1 `div` eval env e2
+  eval env e1 `safeDiv` eval env e2
 eval env (Div2 e1 e2) =
-  eval env e1 `div` eval env e2
+  eval env e1 `safeDiv` eval env e2
 eval env (Rel1 r e1 e2) =
   evalRel r (eval env e1) (eval env e2)
 eval env (Rel2 r e1 e2) =
@@ -378,10 +384,12 @@ eval env (Ordered r e1 e2) =
     !xs = Map.toList (arrayContents (eval env e1))
     !ys = Map.toList (arrayContents (eval env e2))
 eval env (At e1 e2) =
-  fromMaybe (error "out-of-bounds array access") $
-  Map.lookup (eval env e2) (arrayContents (eval env e1))
+  index (eval env e2) (arrayContents (eval env e1))
+  where
+    index i arr =
+      Map.findWithDefault (fromIntegral i * 37 * (if even i then 1 else -1) + 2) i arr
 eval env (Update e1 e2 e3)
-  | idx < 0 || idx >= arrayLength arr = error "update out of bounds"
+  | idx < 0 || idx >= arrayLength arr = arr
   | otherwise = arr {
       arrayContents =
           Map.insert idx val (arrayContents arr) }
@@ -418,6 +426,10 @@ eval env (Null1 e) =
   Set.null (eval env e)
 eval env (Null2 e) =
   Set.null (eval env e)
+
+safeDiv :: Integral a => a -> a -> a
+safeDiv _ 0 = 0
+safeDiv x y = x `div` y
 
 subforms :: Expr Bool -> [Expr Bool]
 subforms e = e:properSubforms e
@@ -649,9 +661,7 @@ instance Pretty (Expr a) where
       oper :: Rational -> Rational -> String -> Expr b -> Expr c -> Doc
       oper p prec name e1 e2 =
         parIf (p > prec) $
-          hang
-            (pPrintPrec l (prec+1) e1 <+> text name) 2
-            (pPrintPrec l (prec+1) e2)
+         pPrintPrec l (prec+1) e1 <+> text name <+> pPrintPrec l (prec+1) e2
 
       -- Precedence levels:
       -- 0: and, or
@@ -700,20 +710,20 @@ instance Pretty (Expr a) where
       exp p (At e1 e2) =
         exp inf e1 <#> brackets (exp 0 e2)
       exp p (Update e1 e2 e3) =
-        exp inf e1 <#> brackets (exp 0 e2 <+> text ":=" <+> exp 0 e3)
+        text "update" <#> parens (hsep (punctuate comma [exp inf e1, exp 0 e2 <+> text ":=" <+> exp 0 e3]))
       exp p (Length e) =
         text "length" <#> parens (exp 0 e)
       exp p (Image e) =
         parIf (p > 6) $
           text "image" <#> parens (exp 0 e)
       exp p (Concat e1 e2) =
-        text "concat" <#> parens (fsep (punctuate comma [exp 0 e1, exp 0 e2]))
+        text "concat" <#> parens (hsep (punctuate comma [exp 0 e1, exp 0 e2]))
       exp p (Restrict e1 e2) =
-        oper p 5 "/" e1 e2
+        text "restrict" <#> parens (hsep (punctuate comma [exp 0 e1, exp 0 e2]))
       exp p (Union1 e1 e2) =
-        text "union" <#> parens (fsep (punctuate comma [exp 0 e1, exp 0 e2]))
+        text "union" <#> parens (hsep (punctuate comma [exp 0 e1, exp 0 e2]))
       exp p (Union2 e1 e2) =
-        text "union" <#> parens (fsep (punctuate comma [exp 0 e1, exp 0 e2]))
+        text "union" <#> parens (hsep (punctuate comma [exp 0 e1, exp 0 e2]))
       exp p (Interval e1 e2) =
         text "[" <#>
         cat [exp 0 e1 <#> text "..", exp 0 e2 <#> text ")"]
@@ -800,12 +810,13 @@ op1 f t =
       case cast e of
         Just e -> Some (f e)
 
-op2 :: (Type a, Type b, Type c) => (Expr a -> Expr b -> Expr c) -> Term Sym -> Term Sym -> Some Expr
+op2 :: (HasCallStack, Type a, Type b, Type c) => (Expr a -> Expr b -> Expr c) -> Term Sym -> Term Sym -> Some Expr
 op2 f t u =
   case (fromQS t, fromQS u) of
     (Some e1, Some e2) ->
       case (cast e1, cast e2) of
         (Just e1, Just e2) -> Some (f e1 e2)
+        _ -> error "oops"
 
 op3 :: (Type a, Type b, Type c, Type d) => (Expr a -> Expr b -> Expr c -> Expr d) -> Term Sym -> Term Sym -> Term Sym -> Some Expr
 op3 f t u v =
@@ -882,6 +893,7 @@ bsearch :: Prog
 bsearch =
   Arg arr (Ordered Le (Local arr) (Local arr)) $
   Arg x (Value (BoolVal True)) $
+  -- Arg y (Rel1 Eq (Local x) (Local y)) $
   Body $
   lo := Value (IndexVal 0) `Then`
   hi := Length (Local arr) `Then`
@@ -900,8 +912,9 @@ bsearch =
   --   (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
   --   (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
 
-x :: Var Integer
+x, y :: Var Integer
 x = Var "x"
+y = Var "y"
 
 lo, hi, mid, idx :: Var Index
 lo = Var "lo"
@@ -962,7 +975,7 @@ instance Typed Sym where
   typ SymLength = QS.typeOf (undefined :: Array Integer -> Index)
   typ SymImage = QS.typeOf (undefined :: Array Integer -> Set Integer)
   typ SymConcat = QS.typeOf (undefined :: Array Integer -> Array Integer -> Array Integer)
-  typ SymRestrict = QS.typeOf (undefined :: Array Integer -> Set Integer -> Array Integer)
+  typ SymRestrict = QS.typeOf (undefined :: Array Integer -> Set Index -> Array Integer)
   typ SymUnion1 = QS.typeOf (undefined :: Set Integer -> Set Integer -> Set Integer)
   typ SymUnion2 = QS.typeOf (undefined :: Set Index -> Set Index -> Set Index)
   typ SymInterval = QS.typeOf (undefined :: Array Index -> Array Index -> Set Index)
@@ -1045,7 +1058,7 @@ enumerator Options{..} prog =
        SymValue (ArrayVal (Array 0 Map.empty)),
        SymValue (SetIntegerVal Set.empty),
        SymValue (SetIndexVal Set.empty)] ++
-      concat [[{-SymNot, -}SymAnd, {-SymOr,-} SymPlus1, SymPlus2, SymMinus1, SymMinus2, SymDiv1, SymDiv2] | Arith `elem` categories] ++
+      concat [[{-SymNot, SymAnd, SymOr,-} SymPlus1, SymPlus2, SymMinus1, SymMinus2{-, SymDiv1, SymDiv2-}] | Arith `elem` categories] ++
       concat
       [map SymRel1 rels ++
        map SymRel2 rels
@@ -1062,24 +1075,24 @@ enumerator Options{..} prog =
 
 n = 7
 
-qs :: Options -> Prog -> Twee.Pruner (WithConstructor Sym) Terminal ()
+qs :: Options -> Prog -> StateT Int (Twee.Pruner (WithConstructor Sym) Terminal) ()
 qs opts@Options{..} prog =
-  (\g -> unGen g (mkQCGen 1234) 0) $
-  QuickCheck.run (QuickCheck.Config 10000 100 Nothing) (liftM2 (,) (genFor prog environment) genVars) eval' $
+  (\g -> unGen g (mkQCGen 4321) 0) $
+  QuickCheck.run (QuickCheck.Config 1000 20 Nothing) (liftM2 (,) (genFor prog environment) genVars) eval' $
   runConditionals [] $
   quickSpec present (flip eval') n univ (enumerator opts prog)
   where
     eval' (env, var) t
       | typeArity (typ t) > 0 = Right t
       | isTypeVar (typ t) = Right t
-      | otherwise =
-        case spoon (evalTerm (env, var) t) of
-          Nothing -> Right t
-          Just _ -> Left (evalTerm (env, var) t)
+      | otherwise = Left (evalTerm (env, var) t)
     present prop =
       {-when (ok prop && not (null (intersect [StmtVar found, StmtVar idx] (funs prop)))) $ -} do
         norm <- normaliser
-        unless (Silent `elem` options) $ putLine (prettyShow . fmap fromQS $ canonicalise $ ac norm $ conditionalise prop)
+        unless (Silent `elem` options) $ do
+          n <- lift $ lift get
+          lift $ lift $ put $! n+1
+          putLine (printf "%3d. " n ++ (prettyShow . fmap fromQS $ canonicalise $ ac norm $ conditionalise prop))
         when (QuickCheck `elem` options) (give prog (liftIO (quickCheck (withMaxSuccess 100 prop))))
     -- ok (_ :=>: t :=: u) | typ t == boolTy, size u > 1 = False
     -- ok _ = True
@@ -1099,24 +1112,10 @@ qs opts@Options{..} prog =
 main = do
   -- give bsearch (quickCheck (\env -> testProgOn bsearch env))
   -- quickCheck (forAll (elements tests) $ \env -> testProgOn bsearch env)
-  withStdioTerminal $ Twee.run (Twee.Config n maxBound) $ do
+  withStdioTerminal $ Twee.run (Twee.Config n maxBound) $ flip evalStateT 0 $ do
+    -- qs (Options [Silent] [Vars, Arith] Background) (Body Skip)
     putLine "== background =="
-    qs (Options [Silent] [Vars, Arith] Background) (Body Skip)
     qs (Options [] [Vars, Arith, Arrays] Background) (Body Skip)
---     -- let
---     --   post env =
---     --     Map.lookup found env == Just (Bool True) ||
---     --     Map.lookup lo env >= Map.lookup hi env 
---     -- qs False True (genEnv `suchThat` post)
---     -- putLine ""
---     -- putLine "== foreground =="
---     -- qs False False (genPoint genEnv)
---     -- putLine ""
---     -- putLine "== psychic =="
---     -- qs True False (genPoint genTestCase)
---     -- putLine ""
---     -- putLine "== when found is true =="
---     -- qs (genPoint genEnv `suchThat` (\env -> Map.lookup found env == Just (Bool True)))
---     -- putLine ""
---     -- putLine "== psychic when found is true =="
---     -- qs (genPoint genTestCase `suchThat` (\env -> Map.lookup found env == Just (Bool True)))
+    putLine ""
+    putLine "== precondition =="
+    qs (Options [] [Arith, Arrays, Vars] Precondition) bsearch
