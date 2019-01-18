@@ -173,6 +173,14 @@ data Value =
   deriving (Eq, Ord, Show, Generic)
 instance NFData Value
 
+valueType :: Value -> Type
+valueType (IndexVal _) = typeOf (undefined :: Index)
+valueType (BoolVal _) = typeOf (undefined :: Bool)
+valueType (IntegerVal _) = typeOf (undefined :: Integer)
+valueType (SetIntegerVal _) = typeOf (undefined :: Set Integer)
+valueType (SetIndexVal _) = typeOf (undefined :: Set Index)
+valueType (Arrayal _) = typeOf (undefined :: Array Integer)
+
 shrinkValue :: Value -> [Value]
 shrinkValue (IndexVal x) = IndexVal <$> shrink x
 shrinkValue (BoolVal x) = BoolVal <$> shrink x
@@ -899,7 +907,6 @@ bsearch :: Prog
 bsearch =
   Arg arr (Ordered Le (Local arr) (Local arr)) $
   Arg x (Value (BoolVal True)) $
-  -- Arg y (Rel1 Eq (Local x) (Local y)) $
   Body $
   lo := Value (IndexVal 0) `Then`
   hi := Length (Local arr) `Then`
@@ -917,9 +924,8 @@ bsearch =
   --   (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
   --   (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
 
-x, y :: Var Integer
+x :: Var Integer
 x = Var "x"
-y = Var "y"
 
 lo, hi, mid, idx :: Var Index
 lo = Var "lo"
@@ -1051,7 +1057,7 @@ genFor prog (From envs) = elements envs
 genFor prog (PostFrom envs) = genPostFrom prog (elements envs)
 genFor prog (PointFrom envs) = genPointFrom prog (elements envs)
 
-enumerator :: Options -> Prog -> Enumerator (Term Sym)
+enumerator :: Options -> Prog -> [Some Local] -> Enumerator (Term Sym)
 enumerator Options{..} prog =
   sortTerms measure $
   enumerateConstants (vars ++ locals ++ map (\x -> App x []) consts) `mappend` enumerateApplications
@@ -1084,12 +1090,14 @@ enumerator Options{..} prog =
 
 n = 7
 
+-- Just reimplement on top of normal QuickSpec? Program state variable
 qs :: Options -> Prog -> StateT Int (Twee.Pruner (WithConstructor Sym) Terminal) ()
 qs opts@Options{..} prog =
   (\g -> unGen g (mkQCGen 4321) 0) $
-  QuickCheck.run (QuickCheck.Config 1000 20 Nothing) (liftM2 (,) (genFor prog environment) genVars) eval' $
-  runConditionals [] $
-  quickSpec present (flip eval') n univ (enumerator opts prog)
+  QuickCheck.run (QuickCheck.Config 1000 20 Nothing) (liftM2 (,) (genFor prog environment) genVars) eval' $ do
+    tests <- gets env_tests
+    runConditionals [] $
+      quickSpec present (flip eval') n univ (enumerator opts prog bound)
   where
     eval' (env, var) t
       | typeArity (typ t) > 0 = Right t
