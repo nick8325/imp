@@ -14,9 +14,9 @@
 module New(module New, module QuickSpec, pPrint, quickCheck) where
 import Twee.Pretty
 import Test.QuickCheck hiding (Ordered, (==>))
-import QuickSpec.Type(typ, typeOf)
-import qualified QuickSpec.Haskell as Haskell
-import qualified QuickSpec.Term as Term
+import QuickSpec.Internal.Type(typ, typeOf)
+import qualified QuickSpec.Internal.Haskell as Haskell
+import qualified QuickSpec.Internal.Term as Term
 import Control.DeepSeq
 import Data.Set(Set)
 import qualified Data.Set as Set
@@ -31,8 +31,9 @@ import Data.List
 import Data.Function
 import Data.Maybe
 import Data.Functor.Classes
+import QuickSpec.Internal hiding (arith)
 import QuickSpec hiding (arith)
-import qualified QuickSpec.Haskell as QSH
+import qualified QuickSpec.Internal.Haskell as QSH
 import Data.Constraint()
 import Test.QuickCheck.Random
 import Test.QuickCheck.Gen
@@ -790,7 +791,7 @@ styledPred name val style size =
   customConstant con{QSH.con_style = style, QSH.con_size = size} `mappend` addInstances insts
 
 base = [
-  instFun (SingleUse :: SingleUse Env),
+  instFun (QSH.SingleUse :: QSH.SingleUse Env),
   instFun (QSH.Names ["s"] :: QSH.Names Env),
   con "true" True,
   con "false" False,

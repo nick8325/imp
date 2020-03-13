@@ -19,28 +19,28 @@ import qualified Data.Set as Set
 import Data.Set(Set)
 import Twee.Pretty hiding (Mode)
 import Control.Monad
-import QuickSpec.Term hiding (Var, Sized, subst, evalTerm, Mode)
-import qualified QuickSpec.Term as QS
+import QuickSpec.Internal.Term hiding (Var, Sized, subst, evalTerm, Mode)
+import qualified QuickSpec.Internal.Term as QS
 import Data.Typeable
 -- import Data.List hiding (lookup)
 -- import Data.Maybe
 -- import Data.Typeable(cast)
 -- import Test.QuickCheck hiding (Fun, collect)
-import QuickSpec.Explore
-import QuickSpec.Explore.Polymorphic
-import QuickSpec.Type hiding (Value, cast, Type, typeOf, toValue, fromValue)
-import qualified QuickSpec.Type as QS
+import QuickSpec.Internal.Explore
+import QuickSpec.Internal.Explore.Polymorphic
+import QuickSpec.Internal.Type hiding (Value, cast, Type, typeOf, toValue, fromValue)
+import qualified QuickSpec.Internal.Type as QS
 -- import QuickSpec.Term hiding (V, int)
 -- import qualified QuickSpec.Term as QS
-import qualified QuickSpec.Pruning.Twee as Twee
-import qualified QuickSpec.Testing.QuickCheck as QuickCheck
-import QuickSpec.Terminal
-import QuickSpec.Pruning.Background(Background)
-import QuickSpec.Haskell(arbitraryFunction)
+import qualified QuickSpec.Internal.Pruning.Twee as Twee
+import qualified QuickSpec.Internal.Testing.QuickCheck as QuickCheck
+import QuickSpec.Internal.Terminal
+import QuickSpec.Internal.Pruning.Background(Background)
+import QuickSpec.Internal.Haskell(arbitraryFunction)
 import Test.QuickCheck.Gen
 import Test.QuickCheck.Random
-import QuickSpec.Explore.Conditionals
-import QuickSpec.Prop
+import QuickSpec.Internal.Explore.Conditionals
+import QuickSpec.Internal.Prop
 import Data.Maybe
 import Data.List
 import Test.QuickCheck hiding (Ordered, (==>))
@@ -56,7 +56,7 @@ import Control.Monad.IO.Class
 import Debug.Trace
 import Control.Spoon
 import Numeric.Natural
-import QuickSpec.Pruning
+import QuickSpec.Internal.Pruning
 import GHC.Stack
 import Control.Monad.Trans.State.Strict
 import Text.Printf
@@ -995,9 +995,6 @@ instance Typed Sym where
   typ SymNull1 = QS.typeOf (undefined :: Set Integer -> Bool)
   typ SymNull2 = QS.typeOf (undefined :: Set Index -> Bool)
   typeSubst_ _ x = x
-
-instance Arity Sym where
-  arity = typeArity . typ
 
 instance Background Sym
 
