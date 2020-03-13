@@ -95,12 +95,12 @@ toCompile :: Expr -> Compile
 toCompile e = Compile e (compile e)
 
 instance Arbitrary Compile where
-  --arbitrary = toCompile <$> arbitrary
-  --shrink c = map toCompile (shrink (input c))
-  arbitrary = elements tests
+  arbitrary = toCompile <$> arbitrary
+  shrink c = map toCompile (shrink (input c))
+  --arbitrary = elements tests
 
-main = quickSpec [
---main = psychic tests shrink [
+--main = quickSpec [
+main = psychic tests shrink [
   monoTypeWithVars ["e"] (Proxy :: Proxy Expr),
   monoTypeWithVars ["C"] (Proxy :: Proxy Compile),
   instFun (SingleUse :: SingleUse Compile),
@@ -109,7 +109,7 @@ main = quickSpec [
   con "run" run,
   con "compile" compile,
   con "input" input,
-  --con "output" output,
+  con "output" output,
   --predicateGen "wellScoped" wellScoped (\() -> genWellScoped),
   --predicateGen "wellScopedC" (wellScoped . input) (\() -> genWellScopedC),
   lists ]
