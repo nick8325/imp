@@ -8,7 +8,6 @@ import QuickSpec.Internal.Prop
 import QuickSpec.Internal.Type hiding (In)
 import QuickSpec.Internal.Utils
 import qualified QuickSpec.Internal.Term as QuickSpec.Internal
-import QuickSpec.Internal.Explore.PartialApplication(PartiallyApplied)
 import qualified QuickSpec.Internal.Testing.QuickCheck as QuickCheck
 import Twee.Base(Extended, Term)
 import Test.QuickCheck
