@@ -4,13 +4,17 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module New where
+module Prog where
 import Twee.Pretty
 import Data.Set(Set)
 import qualified Data.Set as Set
 import Data.Map(Map)
 import Data.Monoid
 import qualified Data.Map.Strict as Map
+import Data.Functor.Identity
+import Data.Typeable
+import Test.QuickCheck hiding ((==>), Ordered)
+import Data.List
 
 data Prog where
   Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
@@ -26,7 +30,7 @@ data Stmt where
   If :: Expr Bool -> Stmt -> Stmt -> Stmt
   While :: Expr Bool -> Expr Bool -> Stmt -> Stmt
   Assert :: Expr Bool -> Stmt
-  Point :: Stmt
+  Point :: String -> Stmt
 deriving instance Show Stmt
 
 infixr 4 `Then`
@@ -69,6 +73,12 @@ data Array a =
     arrayContents :: Map Index a }
   deriving (Eq, Ord, Show)
 
+makeArray :: [a] -> Array a
+makeArray xs =
+  Array {
+    arrayLength = fromIntegral (length xs),
+    arrayContents = Map.fromList (zip [0..] xs) }
+
 instance Pretty a => Pretty (Array a) where
   pPrintPrec l p = pPrintPrec l p . Map.elems . arrayContents
 
@@ -84,11 +94,8 @@ instance Num Index where
 
 data Var a = Var String deriving (Eq, Ord, Show)
 
-class (Show a, Pretty a) => Type a where
+class (Show a, Pretty a, Typeable a, Arbitrary a) => Type a where
   typeName :: a -> String
-
-class Pretty1 f where
-  pPrintPrec1 :: Pretty a => PrettyLevel -> Rational -> f a -> Doc
 
 instance Type Index where
   typeName _ = "index"
@@ -181,8 +188,8 @@ instance Pretty Stmt where
     text "end"
   pPrint (Assert e) =
     text "assert" <#> parens (pPrint e)
-  pPrint Point =
-    text "{ ? }"
+  pPrint (Point msg) =
+    text ("{ " ++ msg ++ " }")
 
 instance Pretty (Expr a) where
   pPrintPrec l p e = exp p e
@@ -264,95 +271,16 @@ instance Pretty (Expr a) where
 instance Pretty (Var a) where
   pPrint (Var x) = text x
 
-bsearch :: Prog
-bsearch =
-  Arg arr (Ordered Le (Local arr)) $
-  Arg x (Value True) $
-  Body $
-  lo := Value 0 `Then`
-  hi := Length (Local arr) `Then`
-  found := Value False `Then`
-  While (And (Not (Local found)) (Rel Lt (Local lo) (Local hi))) (Value True)
-    (-- Point `Then`
-     mid := Div (Plus (Local lo) (Local hi)) (Value 2) `Then`
-     If (Rel Eq (Local x) (At (Local arr) (Local mid)))
-       (found := Value True `Then` idx := Local mid)
-       (If (Rel Le (Local x) (At (Local arr) (Local mid)))
-         (hi := Local mid)
-         --(hi := Minus (Local mid) (Value 1))
-         (lo := Plus (Local mid) (Value 1))))
-  -- If (Local found)
-  --   (Assert (Rel Eq (At (Local arr) (Local idx)) (Local x)))
-  --   (Assert (Pairwise Ne (Singleton (Local x)) (Image (Local arr))))
+instance Arbitrary Relation where
+  arbitrary = elements [Eq, Ne, Le, Lt, Ge, Gt]
 
-x :: Var Integer
-x = Var "x"
+instance Arbitrary Index where
+  arbitrary = Index <$> arbitrary `suchThat` (>= 0)
+  shrink (Index i) = Index <$> filter (>= 0) (shrink i)
 
-lo, hi, mid, idx :: Var Index
-lo = Var "lo"
-hi = Var "hi"
-mid = Var "mid"
-idx = Var "idx"
-
-arr :: Var (Array Integer)
-arr = Var "arr"
-
-found :: Var Bool
-found = Var "found"
-
-dutchFlag :: Prog
-dutchFlag =
-  Arg arr (Value True) $
-  Arg md (Value True) $
-  Body $
-  i := Value 0 `Then`
-  j := Value 0 `Then`
-  n := Length (Local arr) `Minus` Value 1 `Then`
-  While (Rel Le (Local j) (Local n)) (Value True) (
-    If (Rel Lt (At (Local arr) (Local j)) (Local md)) (
-      swap arr (Local i) (Local j) `Then`
-      i := Local i `Plus` Value 1 `Then`
-      j := Local j `Plus` Value 1
-    ){-else-}(
-      If (Rel Gt (At (Local arr) (Local j)) (Local md)) (
-        swap arr (Local j) (Local n) `Then`
-        n := Local n `Minus` Value 1
-      ){-else-}(
-        j := Local j `Plus` Value 1
-      )
-    )
-  )
-
-a, b, k, l, i, j, n, stride :: Var Index
-a = Var "a"
-b = Var "b"
-k = Var "k"
-l = Var "l"
-stride = Var "K"
-i = Var "i"
-j = Var "j"
-n = Var "n"
-
-md :: Var Integer
-md = Var "md"
-
-swap arr x y =
-  arr := Update
-         (Update (Local arr) x (Local arr `At` y))
-                             y (Local arr `At` x)
-
-rotate :: Prog
-rotate =
- Arg arr true $
- Arg stride (Rel Ge (Local stride) (Value 0) &&& Rel Lt (Local stride) (Length (Local arr))) $
- Body $
-   a := Value 0 `Then`
-   b := Length (Local arr) `Then`
-   k := Minus (Length (Local arr)) (Local stride) `Then`
-   l := Local stride `Then`
-   While (Rel Ne (Local k) (Value 0) &&& Rel Ne (Local l) (Value 0)) true
-     (If (Rel Ge (Local k) (Local l))
-       (n := Minus (Local b) (Local l) `Then`
-        While (Rel Ne (Local n) (Local b)) true (swap arr (Local n) (Minus (Local n) (Local l)) `Then` n := Plus (Local n) (Value 1)) `Then` k := Minus (Local k) (Local l) `Then` b := Minus (Local b) (Local l))
-       (n := Local a `Then`
-        While (Rel Ne (Local n) (Plus (Local a) (Local k))) true (swap arr (Local n) (Plus (Local n) (Local k)) `Then` n := Plus (Local n) (Value 1)) `Then` l := Minus (Local l) (Local k) `Then` a := Plus (Local a) (Local k)))
+instance (Ord a, Arbitrary a) => Arbitrary (Array a) where
+  arbitrary = do
+    permute <- elements [id, sort]
+    contents <- permute <$> arbitrary
+    return (makeArray contents)
+  shrink arr = map makeArray (shrink (Map.elems (arrayContents arr)))
