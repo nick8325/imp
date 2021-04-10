@@ -116,7 +116,7 @@ eval env (At e1 e2) =
     index i arr =
       Map.findWithDefault 0 i (arrayContents arr)
 eval env (Update e1 e2 e3)
-  | idx < 0 || idx >= arrayLength arr = arr
+  | not (idx `Map.member` arrayContents arr) = arr
   | otherwise = arr {
       arrayContents =
           Map.insert idx val (arrayContents arr) }
@@ -125,17 +125,20 @@ eval env (Update e1 e2 e3)
     !idx = eval env e2
     !val = eval env e3
 eval env (Length e) =
-  arrayLength (eval env e)
+  case Map.maxViewWithKey (arrayContents arr) of
+    Nothing -> 0
+    Just ((n, _), _) -> n+1
+  where
+    !arr = eval env e
 eval env (Image e) =
   Set.fromList (Map.elems (arrayContents (eval env e)))
 eval env (Concat e1 e2) =
-  Array (len1 + len2) (xs1 `Map.union` Map.mapKeys (+ len1) xs2)
+  toArray (fromArray arr1 ++ fromArray arr2)
   where
-    !(Array len1 xs1) = eval env e1
-    !(Array len2 xs2) = eval env e2
+    !arr1 = eval env e1
+    !arr2 = eval env e2
 eval env (Restrict e1 e2) =
-  arr {
-    arrayContents = Map.restrictKeys (arrayContents arr) set }
+  toArray (Map.elems (Map.restrictKeys (arrayContents arr) set))
   where
     !arr = eval env e1
     !set = eval env e2

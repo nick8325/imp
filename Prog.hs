@@ -67,17 +67,18 @@ deriving instance Show (Expr a)
 
 data Relation = Eq | Ne | Le | Lt | Ge | Gt deriving (Eq, Ord, Show)
 
-data Array a =
+newtype Array a =
   Array {
-    arrayLength :: Index,
     arrayContents :: Map Index a }
   deriving (Eq, Ord, Show)
 
-makeArray :: [a] -> Array a
-makeArray xs =
+toArray :: [a] -> Array a
+toArray xs =
   Array {
-    arrayLength = fromIntegral (length xs),
     arrayContents = Map.fromList (zip [0..] xs) }
+
+fromArray :: Array a -> [a]
+fromArray = Map.elems . arrayContents
 
 instance Pretty a => Pretty (Array a) where
   pPrintPrec l p = pPrintPrec l p . Map.elems . arrayContents
@@ -88,7 +89,7 @@ instance Num Index where
   fromInteger = Index
   Index x + Index y = Index (x+y)
   Index x * Index y = Index (x*y)
-  Index x - Index y = Index (max 0 (x-y))
+  Index x - Index y = Index (x-y)
   abs (Index x) = Index (abs x)
   signum (Index x) = Index (signum x)
 
@@ -282,8 +283,8 @@ instance (Ord a, Arbitrary a) => Arbitrary (Array a) where
   arbitrary = do
     permute <- elements [id, sort]
     contents <- permute <$> arbitrary
-    return (makeArray contents)
-  shrink arr = map makeArray (shrink (Map.elems (arrayContents arr)))
+    return (toArray contents)
+  shrink arr = map toArray (shrink (Map.elems (arrayContents arr)))
 
 instance (Type a, Arbitrary a) => Arbitrary (Expr a) where
   arbitrary = Value <$> arbitrary
