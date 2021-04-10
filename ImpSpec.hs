@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, FlexibleContexts, TypeOperators, TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables, FlexibleContexts, TypeOperators, TypeApplications, FlexibleInstances, MultiParamTypeClasses, UndecidableInstances, TypeFamilies #-}
 module ImpSpec where
 
 import Prog
@@ -12,6 +12,7 @@ import qualified Data.Map.Strict as Map
 import Data.Functor.Identity
 import Data.Set(Set)
 import qualified Data.Set as Set
+import Data.Reflection
 
 genInput :: Prog -> Gen Env
 genInput = go (Env Map.empty)
@@ -52,48 +53,46 @@ styled :: Typeable a => String -> a -> TermStyle -> Int -> Sig
 styled name val style size =
   customConstant (QSH.con name val){QSH.con_style = style, QSH.con_size = size}
 
-styledPred :: (Typeable a, QSH.Predicateable a, Typeable (QSH.PredicateTestCase a)) => String -> a -> TermStyle -> Int -> Sig
-styledPred name val style size =
-  let (insts, con) = QSH.predicate name val in
+instance QSH.Predicateable (Expr Bool) where
+  type PredicateTestCase (Expr Bool) = ()
+  type PredicateResult (Expr Bool) = Expr Bool
+  uncrry = const
+  true _ = QSH.con "true" true
+
+styledPred :: (Typeable a, Typeable b, QSH.Predicateable a, Typeable (QSH.PredicateTestCase a)) => String -> a -> (b -> Gen (QSH.PredicateTestCase a)) -> TermStyle -> Int -> Sig
+styledPred name val gen style size =
+  let (insts, con) = QSH.predicateGen name val gen in
   customConstant con{QSH.con_style = style, QSH.con_size = size} `mappend` addInstances insts
 
-base = [
-  con "true" True,
-  con "false" False,
-  con "not" not,
-  con "0" (0 :: Index),
-  styled "{}" (makeArray [] :: Array A) curried 1,
-  styled "{}" (Set.empty :: Set A) curried 1,
-  monoTypeWithVars ["R"] (Proxy :: Proxy Relation),
-  monoType (Proxy :: Proxy Index),
-  instanceOf @(Num Index),
-  instanceOf @(Num Integer),
-  instanceOf @(Integral Integer),
-  instanceOf @(Integral Index),
-  instanceOf @(Type Bool),
-  instanceOf @(Type Index),
-  instanceOf @(Type Integer),
-  instanceOf @(Type (Set Index)),
-  instanceOf @(Type (Set Integer)),
-  instanceOf @(Type (Array Integer)),
-  defaultTo (Proxy :: Proxy Integer),
-  inst (Sub Dict :: (Ord A, Arbitrary A) :- Arbitrary (Array A)),
-  inst (Sub Dict :: (Ord A, Arbitrary A) :- Arbitrary (Set A)),
-  inst (Sub Dict :: Ord A :- Ord (Array A)),
-  inst (Sub Dict :: Ord A :- Ord (Set A))]
+instance Given (Gen Env) => Arbitrary Env where
+  arbitrary = given
 
--- To do: make all signatures use Expr everywhere, with observational
--- equality
+instance (Given (Gen Env), Ord a) => Observe Env a (Expr a) where
+  observe = eval
+
+base :: Given (Gen Env) => [Sig]
+base = [
+  con "true" true,
+  con "false" false,
+  con "not" nott,
+  con "0" (Value 0 :: Expr Index),
+  styled "{}" (Value (makeArray [] :: Array Integer)) curried 1,
+  styled "{}" (Value (Set.empty :: Set Integer)) curried 1,
+  styled "{}" (Value (Set.empty :: Set Index)) curried 1,
+  monoTypeWithVars ["R"] (Proxy :: Proxy Relation),
+  monoTypeObserve (Proxy :: Proxy (Expr Bool)),
+  monoTypeObserve (Proxy :: Proxy (Expr Index)),
+  monoTypeObserve (Proxy :: Proxy (Expr Integer)),
+  monoTypeObserve (Proxy :: Proxy (Expr (Array Integer))),
+  monoTypeObserve (Proxy :: Proxy (Expr (Set Integer))),
+  monoTypeObserve (Proxy :: Proxy (Expr (Set Index))),
+  defaultTo (Proxy :: Proxy Integer)]
 
 scalar = [
   {-not, and, or-}
-  con "+" ((+) :: Index -> Index -> Index), --Num A ==> (A -> A -> A)),
-  -- con "-" (liftC (-) :: Num A ==> (A -> A -> A)),
-  --con "*" (liftC (*) :: Num A ==> (A -> A -> A)),
-  --styled "div" (liftC div :: Integral A ==> (A -> A -> A)) (infixStyle 5),
-  -- con "not" not,
-  styled "rel" (evalRel :: (Relation -> Integer -> Integer -> Bool)) (relStyle "") 0,
-  styled "rel" (evalRel :: (Relation -> Index -> Index -> Bool)) (relStyle "") 0,
+  con "+" (Plus :: Expr Index -> Expr Index -> Expr Index),
+  styled "rel" (Rel :: (Relation -> Expr Integer -> Expr Integer -> Expr Bool)) (relStyle "") 0,
+  styled "rel" (Rel :: (Relation -> Expr Index -> Expr Index -> Expr Bool)) (relStyle "") 0,
   styled "<=" Le uncurried 1,
   styled "<" Lt uncurried 1,
   styled "/=" Ne uncurried 1]
@@ -133,37 +132,37 @@ singletonStyle =
   TermStyle $ \l p _ [x] ->
   braces (pPrintPrec l 0 x)
 
-op1 :: Type a => (Expr a -> Expr b) -> a -> b
-op1 op x = eval undefined (op (Value x))
-  
-op2 :: (Type a, Type b) => (Expr a -> Expr b -> Expr c) -> a -> b -> c
-op2 op x y = eval undefined (op (Value x) (Value y))
-
-op3 :: (Type a, Type b, Type c) => (Expr a -> Expr b -> Expr c -> Expr d) -> a -> b -> c -> d
-op3 op x y z = eval undefined (op (Value x) (Value y) (Value z))
-
 arrays = [
-  styled "ord" (\rel -> op1 (Ordered rel) :: Array Integer -> Bool) ordStyle 1,
-  styled "at" (op2 At) atStyle 1,
-  styled "interval" (op2 Interval) intervalStyle 1,
-  styled "|" (op2 Restrict) (infixStyle 5) 1,
-  styled "image" (op1 Image) uncurried 1]
+  styled "ord" (\rel -> Ordered rel :: Expr (Array Integer) -> Expr Bool) ordStyle 1,
+  styled "at" At atStyle 1,
+  styled "interval" Interval intervalStyle 1,
+  styled "|" Restrict (infixStyle 5) 1,
+  styled "image" Image uncurried 1]
   --styled "restrict" (op3 (\arr x y -> Restrict arr (Interval x y))) uncurried 1]
 
 -- Reynolds
-demo1 = quickSpec sig1
+demo1 = give (undefined :: Gen Env) (quickSpec sig1)
+
+genPairwise :: (Type a, Type (Set a), Ord a, Num a, Arbitrary a) => () -> Gen (Relation, (Expr (Set a), (Expr (Set a), ())))
+genPairwise () = do
+  rel <- arbitrary
+  (s1, s2) <- arbitrary `suchThat` (\(s1, s2) -> eval undefined (Pairwise rel (Value s1) (Value s2)))
+  return (rel, (Value s1, (Value s2, ())))
+
+sig1 :: Given (Gen Env) => [Sig]
 sig1 = [
   background [base, scalar],
   signature arrays,
-  background (con "-" (liftC (-) :: Num A ==> (A -> A -> A))),
-  styled "∪" (liftC (op2 Union) :: (Type A, Type (Set A), Ord A) ==> (Set A -> Set A -> Set A)) (infixStyle 5) 1,
-  styledPred "pairwise" (\rel -> op2 (Pairwise rel) :: (Set Index -> Set Index -> Bool)) (relStyle "*") 1,
-  styledPred "pairwise" (\rel -> op2 (Pairwise rel) :: (Set Integer -> Set Integer -> Bool)) (relStyle "*") 1,
-  styled "singleton" (liftC (op1 Singleton) :: (Type A, Ord A) ==> (A -> Set A)) singletonStyle 1]
-  --styled "update" (op3 Update) updateStyle 1,
-  -- styled "length" (op1 Length) uncurried 1,
-  --styledPred "inBounds" ((\n arr -> n >= 0 && n < arrayLength arr) :: Index -> Array Integer -> Bool) uncurried 1,
-  --styled "concat" (op2 Concat) uncurried 1]
+  styled "∪" (Union :: Expr (Set Index) -> Expr (Set Index) -> Expr (Set Index)) (infixStyle 5) 1,
+  styled "∪" (Union :: Expr (Set Integer) -> Expr (Set Integer) -> Expr (Set Integer)) (infixStyle 5) 1,
+  styledPred "pairwise" (\rel -> Pairwise rel :: Expr (Set Index) -> Expr (Set Index) -> Expr Bool) genPairwise (relStyle "*") 1,
+  styledPred "pairwise" (\rel -> Pairwise rel :: Expr (Set Integer) -> Expr (Set Integer) -> Expr Bool) genPairwise (relStyle "*") 1,
+  styled "singleton" (Singleton :: Expr Integer -> Expr (Set Integer)) singletonStyle 1,
+  styled "update" Update updateStyle 1,
+  styled "length" Length uncurried 1,
+  --styledPred "inBounds" ((\n arr -> n >= 0 && n < arrayLength arr) :: Index -> Array Integer -> Bool) genInBounds uncurried 1,
+  styled "concat" Concat uncurried 1]
+{-
 reynoldsSig = [
   styled "∪" (liftC (op2 Union) :: (Type A, Type (Set A), Ord A) ==> (Set A -> Set A -> Set A)) (infixStyle 5) 1,
   styled "pairwise" (\rel -> op2 (Pairwise rel) :: (Set Index -> Set Index -> Bool)) (relStyle "*") 1,
@@ -174,7 +173,7 @@ reynoldsSig = [
   --styled "length" (op1 Length) uncurried 1,
   --styledPred "inBounds" ((\n arr -> n >= 0 && n < arrayLength arr) :: Index -> Array Integer -> Bool) uncurried 1 ]
   --styled "concat" (op2 Concat) uncurried 1]
-
+-}
 {-
 data Options =
   Options {

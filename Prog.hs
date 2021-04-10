@@ -50,14 +50,14 @@ data Expr a where
   -- Relations
   Rel :: (Type a, Ord a, Num a) => Relation -> Expr a -> Expr a -> Expr Bool
   Pairwise :: (Type a, Ord a, Num a) => Relation -> Expr (Set a) -> Expr (Set a) -> Expr Bool
-  Ordered :: (Type a, Ord a, Num a) => Relation -> Expr (Array a) -> Expr Bool
+  Ordered :: Relation -> Expr (Array Integer) -> Expr Bool
   -- Arrays
-  At :: Num a => Expr (Array a) -> Expr Index -> Expr a
-  Update :: (Type a, Ord a) => Expr (Array a) -> Expr Index -> Expr a -> Expr (Array a)
+  At :: Expr (Array Integer) -> Expr Index -> Expr Integer
+  Update :: Expr (Array Integer) -> Expr Index -> Expr Integer -> Expr (Array Integer)
   Length :: Expr (Array Integer) -> Expr Index
-  Image :: (Type (Array a), Ord a) => Expr (Array a) -> Expr (Set a)
-  Concat :: Expr (Array a) -> Expr (Array a) -> Expr (Array a)
-  Restrict :: Expr (Array a) -> Expr (Set Index) -> Expr (Array a)
+  Image :: Expr (Array Integer) -> Expr (Set Integer)
+  Concat :: Expr (Array Integer) -> Expr (Array Integer) -> Expr (Array Integer)
+  Restrict :: Expr (Array Integer) -> Expr (Set Index) -> Expr (Array Integer)
   -- Sets
   Interval :: Expr Index -> Expr Index -> Expr (Set Index)
   Union :: (Type a, Ord a) => Expr (Set a) -> Expr (Set a) -> Expr (Set a)
@@ -284,3 +284,6 @@ instance (Ord a, Arbitrary a) => Arbitrary (Array a) where
     contents <- permute <$> arbitrary
     return (makeArray contents)
   shrink arr = map makeArray (shrink (Map.elems (arrayContents arr)))
+
+instance (Type a, Arbitrary a) => Arbitrary (Expr a) where
+  arbitrary = Value <$> arbitrary
