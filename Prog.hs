@@ -15,6 +15,26 @@ import Data.Functor.Identity
 import Data.Typeable
 import Test.QuickCheck hiding ((==>), Ordered)
 import Data.List
+import Data.Functor.Classes
+
+class Pretty1 f where
+  pPrintPrec1 :: Pretty a => PrettyLevel -> Rational -> f a -> Doc
+
+instance Pretty1 Identity where
+  pPrintPrec1 l p (Identity x) = pPrintPrec l p x
+
+instance Pretty1 f => Pretty (Some f) where
+  pPrintPrec l p (Some x) = pPrintPrec1 l p x
+
+instance Show1 f => Show (Some f) where
+  showsPrec p (Some x) = showsPrec1 p x
+
+data Some f where
+  Some :: Type a => f a -> Some f
+
+newtype Env = Env { unEnv :: Map String (Some Identity) }
+  deriving Pretty
+instance Show Env where show = prettyShow
 
 data Prog where
   Arg  :: Type a => Var a -> Expr Bool -> Prog -> Prog
@@ -63,6 +83,8 @@ data Expr a where
   Union :: (Type a, Ord a) => Expr (Set a) -> Expr (Set a) -> Expr (Set a)
   Singleton :: (Type a, Ord a) => Expr a -> Expr (Set a)
   Null :: Expr (Set a) -> Expr Bool
+  -- Internal
+  GetEnv :: Expr Env
 deriving instance Show (Expr a)
 
 data Relation = Eq | Ne | Le | Lt | Ge | Gt deriving (Eq, Ord, Show)
@@ -93,7 +115,7 @@ instance Num Index where
   abs (Index x) = Index (abs x)
   signum (Index x) = Index (signum x)
 
-data Var a = Var String deriving (Eq, Ord, Show)
+data Var a = Var {varName :: String} deriving (Eq, Ord, Show)
 
 class (Show a, Pretty a, Typeable a, Arbitrary a) => Type a where
   typeName :: a -> String

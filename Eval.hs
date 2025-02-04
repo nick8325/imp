@@ -11,9 +11,6 @@ import Data.Functor.Identity
 import Data.Typeable
 import Data.Maybe
 
-data Some f where
-  Some :: Type a => f a -> Some f
-
 args :: Prog -> [Some Var]
 args (Arg x _ prog) = Some x:args prog
 args (Body _) = []
@@ -21,10 +18,6 @@ args (Body _) = []
 body :: Prog -> Stmt
 body (Arg _ _ prog) = body prog
 body (Body stmt) = stmt
-
-newtype Env = Env { unEnv :: Map String (Some Identity) }
-  deriving Pretty
-instance Show Env where show = prettyShow
 
 insertEnv :: Type a => Var a -> a -> Env -> Env
 insertEnv (Var x) v (Env env) = Env (Map.insert x (Some (Identity v)) env)
@@ -35,23 +28,14 @@ lookupEnv (Var x) (Env env) =
     Some (Identity v) ->
       fromMaybe (error "ill-typed variable") $ cast v
 
+memberEnv :: Type a => Var a -> Env -> Bool
+memberEnv (Var x) (Env e) = x `Map.member` e
+
 boundEnv :: Env -> [Some Var]
 boundEnv (Env env) = map toVar (Map.toList env)
   where
     toVar (x, Some (_ :: Identity a)) =
       Some (Var x :: Var a)
-
-class Pretty1 f where
-  pPrintPrec1 :: Pretty a => PrettyLevel -> Rational -> f a -> Doc
-
-instance Pretty1 Identity where
-  pPrintPrec1 l p (Identity x) = pPrintPrec l p x
-
-instance Pretty1 f => Pretty (Some f) where
-  pPrintPrec l p (Some x) = pPrintPrec1 l p x
-
-instance Show1 f => Show (Some f) where
-  showsPrec p (Some x) = showsPrec1 p x
 
 exec :: Env -> Stmt -> ([(String, Env)], Env)
 exec env (x := e) =
@@ -150,6 +134,7 @@ eval env (Singleton e) =
   Set.singleton $! eval env e
 eval env (Null e) =
   Set.null (eval env e)
+eval env GetEnv = env
 
 evalRel :: (Ord a, Num a) => Relation -> a -> a -> Bool
 evalRel Eq = (==)
