@@ -1,0 +1,7 @@
+resolver: lts-22.43
+
+packages:
+- /home/nick/prog/quickspec
+extra-deps:
+- spoon-0.3.1
+- twee-lib-2.4.2

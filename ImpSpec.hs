@@ -102,12 +102,13 @@ base = [
   signature instances,
   con "true" true,
   con "false" false,
-  con "not" nott,
+  --con "not" nott,
   con "0" (Value 0 :: Expr Index),
   --con "1" (Value 0 :: Expr Index),
-  styled "{}" (Value (toArray [] :: Array Integer)) curried 1,
-  styled "{}" (Value (Set.empty :: Set Integer)) curried 1,
-  styled "{}" (Value (Set.empty :: Set Index)) curried 1 ]
+  styled "{}" (Value (toArray [] :: Array Integer)) curried 1
+  ]
+  {-styled "{}" (Value (Set.empty :: Set Integer)) curried 1,
+  styled "{}" (Value (Set.empty :: Set Index)) curried 1 ]-}
 
 instances :: Given (Gen Env) => [Sig]
 instances = [
@@ -153,6 +154,11 @@ singletonStyle =
   fixedArity 1 $
   TermStyle $ \l p _ [x] ->
   braces (pPrintPrec l 0 x)
+
+sliceStyle =
+  fixedArity 3 $
+  TermStyle $ \l p _ [arr, x, y] ->
+  pPrintPrec l 10 arr <> (text "[" <#> cat [pPrintPrec l 0 x <#> text "..", pPrintPrec l 0 y <#> text ")"])
 
 arrays = [
   --unaryPred "ord<" (Ordered Lt :: Expr (Array Integer) -> Expr Bool),
@@ -263,16 +269,18 @@ impSpec e1 e2 sig1 sig2 = do
     background (sig1 e2),
     signature (sig2 e2) ])
 
-psychicImpSpec :: (Signature sig1, Signature sig2) => Prog -> Gen Env -> Gen Env -> (Gen Env -> sig1) -> (Gen Env -> sig2) -> IO ()
-psychicImpSpec prog tests e sig1 sig2 =
-  psychic prog tests shr e $ \e -> [
-      withMaxTermSize 7,
-      signature (give e instances),
-      variableUse (UpTo 0) (Proxy :: Proxy A),
-      signature (sig1 e),
-      signature (sig2 e) ]
+psychicImpSpec :: (Signature sig1, Signature sig2) => Prog -> Gen Env -> Gen Env -> Gen Env -> (Gen Env -> sig1) -> (Gen Env -> sig2) -> IO ()
+psychicImpSpec prog chaos tests e sig1 sig2 = do
+  thy <- quickSpecResult (background (sig chaos))
+  psychic prog tests shr e $ \e -> signature [signature (sig e), addBackground thy]
   where
       shr tc = filter ok (map (postOf prog) (shrinkEnv prog (Env (Map.filterWithKey p (unEnv tc)))))
       p x _ = x `elem` [ varName x | Some x <- args prog ]
       ok tc = eval tc (preProg prog)
+      sig e = [
+        withMaxTermSize 7,
+        signature (give e instances),
+        variableUse (UpTo 0) (Proxy :: Proxy A),
+        signature (sig1 e),
+        signature (sig2 e) ]
 
